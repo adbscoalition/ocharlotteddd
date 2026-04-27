@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { OrbitControls } from "../vendor/OrbitControls.js";
+import { OrbitControls } from "./OrbitControls.js";
 
 const BAND_CONFIG = [
   { id: "ns", label: "NS", name: "Polar", multiplier: 0.045, color: "#ff2f2f", opacity: 0.78 },
