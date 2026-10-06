@@ -58,7 +58,7 @@ test('dipole field tracks strength, polarity, distance and rotation', () => {
   assert.ok(zero.every(value => value === 0));
 });
 
-const { advanceFieldParticle, initializeFieldParticle } = await import('../electron-physics.mjs');
+const { advanceFieldParticle, initializeFieldParticle, guidingSpeed } = await import('../electron-physics.mjs');
 const { sampleFieldLine, buildFieldLineArc, fieldLineParameter, particleBand, transformFieldVector } = await import('../field-lines.mjs');
 const identity = [0,0,0,1];
 const seeded = (seed = 42) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
@@ -68,6 +68,7 @@ const guided = (band = 3, fraction = 0.3) => {
   p.guideBand = band; p.guideRadius = 4 * [0.045,0.2,0.5,1,1.7,3.5,4.5,6.5][band];
   p.arc = buildFieldLineArc(p.guideRadius,p.phi); p.lineDistance = p.arc[64] * fraction;
   p.lineDirection = 1; p.phase = 'captured'; p.gyroScale = 0; p.pitch = 0.8;
+  p.pitchTarget = 0.8; p.driftRate = 0; p.speedSpread = 1; p.scatterTime = 100;
   sampleFieldLine(p.guideRadius,p.phi,fieldLineParameter(p.arc,p.lineDistance),p.local);
   p.position = [...p.local];
   return p;
@@ -84,7 +85,7 @@ test('polar inlets launch near both magnetic poles rather than a sphere',()=>{
   const random=seeded(); let north=0,south=0;
   for(let i=0;i<100;i++) {
     const p=fresh(random);
-    assert.ok(Math.hypot(p.position[0],p.position[2]) <= 4*0.2);
+    assert.ok(Math.hypot(p.position[0],p.position[2]) <= 4*0.5);
     assert.ok(Math.abs(p.position[1]) > 0.72+4*0.5);
     if(p.entryPole>0)north++;else south++;
   }
@@ -243,4 +244,71 @@ test('most ejections are polar while a minority have random directions',()=>{
     if(p.ejectionRoute==='pole')polar++;else other++;
   }
   assert.ok(polar>700&&polar<900); assert.ok(other>100&&other<300);
+});
+
+test('inner populations travel faster than outer populations with equal launch settings',()=>{
+  const speeds=[];
+  for(let band=0;band<8;band++) {
+    const p=guided(band,0.5),before=p.lineDistance;
+    speeds.push(guidingSpeed(p,4));
+    advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+    near((p.lineDistance-before)*120,speeds[band],1e-9);
+  }
+  speeds.slice(1).forEach((v,i)=>assert.ok(v<speeds[i]));
+  assert.ok(speeds[0]>3*speeds[7]);
+});
+
+test('ejected electrons still bend magnetically without gaining kinetic energy',()=>{
+  const p=fresh();p.phase='released';p.position=[4,0,0];p.velocity=[0,0,5];
+  evolve(p,1,0.5);
+  near(Math.hypot(...p.velocity),5,1e-10);
+  assert.ok(Math.abs(p.velocity[0])>1);
+  assert.ok(Math.abs(p.position[0]-4)>0.1);
+});
+
+test('off-axis replacements respond to B before crossing the map boundary',()=>{
+  const p=fresh();p.inbound=true;p.position=[30,12,2];p.velocity=[0,-15,0];
+  evolve(p,10,0.5);
+  assert.ok(p.inbound);
+  near(Math.hypot(...p.velocity),15,1e-10);
+  assert.ok(Math.hypot(p.velocity[0],p.velocity[2])>0.01);
+});
+
+test('pitch scattering changes gradually and does not jitter particle positions',()=>{
+  const p=guided(3,0.5);p.scatterTime=0;p.random=()=>0.1;
+  const before=p.pitch,position=[...p.position];
+  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  assert.ok(p.pitch<before&&p.pitch>before-0.01);
+  assert.ok(Math.hypot(...p.position.map((v,i)=>v-position[i]))<0.2);
+  assert.ok(p.scatterTime>0);
+});
+
+test('gyro motion tightens and rotates faster in a stronger field',()=>{
+  const run=intensity=>{
+    const p=guided(3,0.5);p.gyroScale=0.02;const phase=p.gyroPhase;
+    advanceFieldParticle(p,[0,0,0],4,intensity,identity,0,1/120);
+    const guide=sampleFieldLine(p.guideRadius,p.phi,fieldLineParameter(p.arc,p.lineDistance));
+    return {radius:Math.hypot(...p.local.map((v,i)=>v-guide[i])),angle:Math.abs(p.gyroPhase-phase)};
+  };
+  const weak=run(0.2),strong=run(10);
+  assert.ok(strong.radius<weak.radius);assert.ok(strong.angle>weak.angle);
+});
+
+test('invisible guide radii and orbital phases form a varied continuous population',()=>{
+  const random=seeded(24),ps=Array.from({length:128},()=>fresh(random));
+  for(const p of ps){p.pitch=0.8;p.pitchTarget=0.8;evolve(p,1,5);}
+  const captured=ps.filter(p=>p.phase==='captured');
+  assert.ok(captured.length>80);
+  assert.ok(new Set(captured.map(p=>p.guideRadius.toFixed(4))).size>80);
+  assert.ok(new Set(captured.map(p=>p.phi.toFixed(3))).size>80);
+});
+
+test('released velocity matches actual world displacement through rotating guides',()=>{
+  const p=guided(4,0.4),before=[...p.position],dt=1/120,angle=12*dt;
+  const q=[0,Math.sin(angle/2),0,Math.cos(angle/2)];
+  advanceFieldParticle(p,[0,0,0],4,1,q,12,dt);
+  p.velocity.forEach((v,i)=>near(v,(p.position[i]-before[i])/dt));
+  const atRelease=[...p.position],velocity=[...p.velocity];
+  advanceFieldParticle(p,[0,0,0],4,0,q,12,dt);
+  p.position.forEach((v,i)=>near(v,atRelease[i]+velocity[i]*dt));
 });

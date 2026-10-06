@@ -117,7 +117,8 @@
             <span>Show free electrons</span>
             <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
           </label>
-          <p class="control-hint" id="electronsHint">Electrons enter through the poles and spiral along magnetic lines. They can stay on a band, transfer to another, or eject. Most ejections follow the poles; some leave in random directions. Illustrative transport model.</p>
+          <p class="control-hint" id="electronsHint">Electrons spiral, bounce and drift along varied magnetic paths. Faster inner populations and slower outer populations can stay, change bands or escape, mostly through the poles. Magnetic force bends motion; the CLT trapping model supplies capture.</p>
+          <details class="control-hint"><summary>Motion model &amp; references</summary><p>Scaled guiding-center model with pitch-angle scattering and magnetic deflection during entry and escape. Inner-band energies and the CLT capture potential are model assumptions; this is not a calibrated plasma simulation.</p><p><a href="https://openstax.org/books/university-physics-volume-2/pages/11-3-motion-of-a-charged-particle-in-a-magnetic-field" target="_blank" rel="noopener noreferrer">Helical motion &amp; magnetic mirrors — OpenStax</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node19.html" target="_blank" rel="noopener noreferrer">Magnetic drift — UT Austin</a><br /><a href="https://www.particleincell.com/2011/vxb-rotation/" target="_blank" rel="noopener noreferrer">Lorentz integration — Boris method</a></p></details>
           <p class="control-hint">Cyan: free · Green: polar entry · Gold: guided · White: ejected</p>
           <p class="control-hint">Capture is active throughout the field, even with lines hidden.</p>
           <p class="control-hint">Escaped electrons are replaced 100 m beyond MH, incoming at 15 m/s.</p>
@@ -155,7 +156,7 @@
             <span>Electron trails</span>
             <input id="electronTrailsToggle" type="checkbox" checked disabled />
           </label>
-          <p class="control-hint">Guided trails rotate with the field. Incoming and ejected trails show motion through space.</p>
+          <p class="control-hint">Trails record actual motion through space. Past positions stay fixed as the field rotates or particles change bands.</p>
           <button id="respawnElectronsButton" class="probe-button" type="button" disabled>Inject fresh electrons</button>
           <label class="toggle-row">
             <span>Show compasses</span>

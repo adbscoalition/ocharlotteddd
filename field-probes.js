@@ -1,9 +1,10 @@
 import * as THREE from "three";
 import { advanceFieldParticle, initializeFieldParticle, placeIncomingReplacement, sampleMagneticField } from "./electron-physics.mjs";
-import { particleBand, fieldMapDistance, MH_MULTIPLIER, transformFieldVector } from "./field-lines.mjs";
+import { particleBand, fieldMapDistance, MH_MULTIPLIER } from "./field-lines.mjs";
 
 const STEP = 1 / 120;
-const TRAIL_LENGTH = 24;
+const TRAIL_LENGTH = 40;
+const TRAIL_SAMPLE_TIME = 1 / 60;
 const UP = new THREE.Vector3(0, 1, 0);
 const PARTICLE_COLORS = {
   free: [0.3, 0.85, 1],
@@ -23,12 +24,15 @@ export class FieldProbes {
     this.moment = [0, 1, 0];
     this.spinAxis = [0, 1, 0];
     this.orientation = [0, 0, 0, 1];
+    this.previousOrientation = new THREE.Quaternion();
+    this.targetOrientation = new THREE.Quaternion();
+    this.stepQuaternion = new THREE.Quaternion();
+    this.stepOrientation = [0, 0, 0, 1];
     this.ejections = 0;
     this.events = { stays: 0, bandChanges: 0, poleEjections: 0, randomEjections: 0 };
     this.replacements = 0;
     this.inboundCount = 0;
     this.mapPoint = [0, 0, 0];
-    this.trailPoint = [0, 0, 0];
     this.bandCounts = new Array(9).fill(0);
     this.counts = { free: 0, capturing: 0, captured: 0, released: 0 };
     this.direction = new THREE.Vector3();
@@ -65,7 +69,7 @@ export class FieldProbes {
       new THREE.BufferGeometry(),
       new THREE.LineBasicMaterial({
         transparent: true,
-        opacity: 0.25,
+        opacity: 0.16,
         vertexColors: true,
         depthWrite: false,
         blending: THREE.NormalBlending,
@@ -126,7 +130,8 @@ export class FieldProbes {
     this.trails.geometry.setAttribute("position", new THREE.BufferAttribute(this.trailPositions, 3).setUsage(THREE.DynamicDrawUsage));
     this.trails.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     this.particles = Array.from({ length: count }, () => ({
-      position: [0, 0, 0], velocity: [0, 0, 0], history: new Float32Array(TRAIL_LENGTH * 3), head: 0, age: 0,
+      position: [0, 0, 0], velocity: [0, 0, 0], history: new Float32Array(TRAIL_LENGTH * 3),
+      historyColors: new Float32Array(TRAIL_LENGTH * 3), head: 0, age: 0, trailTime: 0,
     }));
     this.respawn();
     for (const compass of this.compasses) {
@@ -147,8 +152,11 @@ export class FieldProbes {
     }
     particle.age = 0;
     particle.head = 0;
-    particle.historyFrame = "world";
-    for (let j = 0; j < TRAIL_LENGTH; j += 1) particle.history.set(particle.position, j * 3);
+    particle.trailTime = 0;
+    for (let j = 0; j < TRAIL_LENGTH; j += 1) {
+      particle.history.set(particle.position, j * 3);
+      particle.historyColors.set(PARTICLE_COLORS[particle.phase], j * 3);
+    }
   }
 
   respawn() {
@@ -172,6 +180,7 @@ export class FieldProbes {
     this.orientation[1] = orientation.y;
     this.orientation[2] = orientation.z;
     this.orientation[3] = orientation.w;
+    this.previousOrientation.copy(orientation);
   }
 
   update(delta, axis, intensity, spinAxis = axis, angularSpeed = 0, orientation = null) {
@@ -182,14 +191,21 @@ export class FieldProbes {
     this.spinAxis[0] = spinAxis.x;
     this.spinAxis[1] = spinAxis.y;
     this.spinAxis[2] = spinAxis.z;
-    if (orientation) this.setOrientation(orientation);
+    if (orientation) this.targetOrientation.copy(orientation);
+    else this.targetOrientation.fromArray(this.orientation);
+    this.targetOrientation.toArray(this.orientation);
     if (this.electronGroup.visible) {
       this.accumulator += Math.min(delta, 0.05);
-      while (this.accumulator >= STEP) {
+      const steps = Math.floor((this.accumulator + 1e-12) / STEP);
+      for (let step = 0; step < steps; step += 1) {
+        // Resolve field rotation within a frame. Applying the final pose to all
+        // substeps creates artificial zigzags in otherwise genuine trails.
+        this.stepQuaternion.slerpQuaternions(this.previousOrientation, this.targetOrientation, (step + 1) / steps);
+        this.stepQuaternion.toArray(this.stepOrientation);
         for (const particle of this.particles) {
           const previousPhase = particle.phase;
           const previousVisits = particle.visits;
-          advanceFieldParticle(particle, this.center, this.radius, intensity, this.orientation, angularSpeed, STEP, this.spinAxis);
+          advanceFieldParticle(particle, this.center, this.radius, intensity, this.stepOrientation, angularSpeed, STEP, this.spinAxis);
           if (particle.phase === "released" && previousPhase !== "released") this.ejections += 1;
           if (particle.visits > previousVisits) {
             const outcome = { stay: "stays", band_change: "bandChanges", eject_pole: "poleEjections", eject_random: "randomEjections" }[particle.lastOutcome];
@@ -200,22 +216,22 @@ export class FieldProbes {
             && fieldMapDistance(particle.position, this.center, this.orientation, this.mapPoint) > this.radius * MH_MULTIPLIER) {
             this.releaseParticle(particle, true);
           }
+          particle.trailTime += STEP;
+          if (particle.trailTime >= TRAIL_SAMPLE_TIME) {
+            particle.trailTime -= TRAIL_SAMPLE_TIME;
+            particle.head = (particle.head + 1) % TRAIL_LENGTH;
+            // Record only actual world positions and colors at that time. Field
+            // rotation, band changes and ejection never transform old samples.
+            particle.history.set(particle.position, particle.head * 3);
+            particle.historyColors.set(PARTICLE_COLORS[particle.phase], particle.head * 3);
+          }
         }
         this.accumulator -= STEP;
       }
-      for (const particle of this.particles) {
-        const frame = particle.phase === "captured" ? "field" : "world";
-        const point = frame === "field" ? particle.local : particle.position;
-        if (particle.historyFrame !== frame) {
-          for (let j = 0; j < TRAIL_LENGTH; j += 1) particle.history.set(point, j * 3);
-          particle.historyFrame = frame;
-          particle.head = 0;
-        }
-        particle.head = (particle.head + 1) % TRAIL_LENGTH;
-        particle.history.set(point, particle.head * 3);
-      }
+      this.accumulator = Math.max(0, this.accumulator);
       this.writeGeometry();
     }
+    this.previousOrientation.copy(this.targetOrientation);
     if (this.compassGroup.visible) {
       for (const compass of this.compasses) {
         sampleMagneticField(compass.anchor.position.toArray(), this.center, this.moment, this.radius, intensity, this.field);
@@ -231,7 +247,6 @@ export class FieldProbes {
     this.counts = { free: 0, capturing: 0, captured: 0, released: 0 };
     this.bandCounts.fill(0);
     this.inboundCount = 0;
-    let trailColorsChanged = false;
     this.particles.forEach((particle, i) => {
       this.counts[particle.phase] += 1;
       if (particle.inbound) this.inboundCount += 1;
@@ -240,18 +255,6 @@ export class FieldProbes {
       this.colors.set(PARTICLE_COLORS[particle.phase], i * 3);
       this.positions.set(particle.position, i * 3);
       if (!this.trails.visible) return;
-      if (particle.trailPhase !== particle.phase) {
-        const color = PARTICLE_COLORS[particle.phase];
-        for (let j = 0; j < TRAIL_LENGTH - 1; j += 1) {
-          const fade = 1 - j / (TRAIL_LENGTH - 1);
-          const offset = (i * (TRAIL_LENGTH - 1) + j) * 6;
-          for (let k = 0; k < 3; k += 1) {
-            this.trailColors[offset + k] = this.trailColors[offset + 3 + k] = color[k] * fade;
-          }
-        }
-        particle.trailPhase = particle.phase;
-        trailColorsChanged = true;
-      }
       for (let j = 0; j < TRAIL_LENGTH - 1; j += 1) {
         const a = ((particle.head - j + TRAIL_LENGTH) % TRAIL_LENGTH) * 3;
         const b = ((particle.head - j - 1 + TRAIL_LENGTH) % TRAIL_LENGTH) * 3;
@@ -259,18 +262,19 @@ export class FieldProbes {
         for (let endpoint = 0; endpoint < 2; endpoint += 1) {
           const source = endpoint === 0 ? a : b;
           const target = offset + endpoint * 3;
-          for (let k = 0; k < 3; k += 1) this.trailPoint[k] = particle.history[source + k];
-          if (particle.historyFrame === "field") {
-            transformFieldVector(this.trailPoint, this.orientation, this.trailPoint);
-            for (let k = 0; k < 3; k += 1) this.trailPoint[k] += this.center[k];
+          const fade = 1 - (j + endpoint) / (TRAIL_LENGTH - 1);
+          for (let k = 0; k < 3; k += 1) {
+            this.trailPositions[target + k] = particle.history[source + k];
+            this.trailColors[target + k] = particle.historyColors[source + k] * fade;
           }
-          this.trailPositions.set(this.trailPoint, target);
         }
       }
     });
     this.points.geometry.attributes.position.needsUpdate = true;
     this.points.geometry.attributes.color.needsUpdate = true;
-    if (trailColorsChanged) this.trails.geometry.attributes.color.needsUpdate = true;
-    if (this.trails.visible) this.trails.geometry.attributes.position.needsUpdate = true;
+    if (this.trails.visible) {
+      this.trails.geometry.attributes.position.needsUpdate = true;
+      this.trails.geometry.attributes.color.needsUpdate = true;
+    }
   }
 }
