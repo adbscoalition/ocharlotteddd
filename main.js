@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "./OrbitControls.js";
+import { FieldProbes } from "./field-probes.js";
 
 const BAND_CONFIG = [
   { id: "ns", label: "NS", name: "Polar", multiplier: 0.045, color: "#ff2f2f", opacity: 0.78 },
@@ -19,6 +20,11 @@ const DEFAULTS = {
   flips: 0.3,
   tilt: 13,
   universalTilt: 0,
+  showElectrons: false,
+  electronCount: 160,
+  electronSpeed: 1,
+  electronTrails: true,
+  showCompasses: false,
 };
 
 const FIELD_CENTER_Y = 0.82;
@@ -48,6 +54,14 @@ const elements = {
   tiltInput: document.querySelector("#tiltInput"),
   universalTiltRange: document.querySelector("#universalTiltRange"),
   universalTiltInput: document.querySelector("#universalTiltInput"),
+  electronsToggle: document.querySelector("#electronsToggle"),
+  electronCountRange: document.querySelector("#electronCountRange"),
+  electronCountOutput: document.querySelector("#electronCountOutput"),
+  electronSpeedRange: document.querySelector("#electronSpeedRange"),
+  electronSpeedOutput: document.querySelector("#electronSpeedOutput"),
+  electronTrailsToggle: document.querySelector("#electronTrailsToggle"),
+  respawnElectronsButton: document.querySelector("#respawnElectronsButton"),
+  compassesToggle: document.querySelector("#compassesToggle"),
   resetButton: document.querySelector("#resetButton"),
   legend: document.querySelector("#legend"),
   polarityStatus: document.querySelector("#polarityStatus"),
@@ -94,7 +108,7 @@ controls.minDistance = 1.9;
 controls.maxDistance = 14;
 controls.target.set(0, FIELD_CENTER_Y, 0);
 
-// Tilt the model and field about their shared center, before local spin and flips.
+// Tilt the whole field about its center, before local spin and polarity flips.
 const universalTiltGroup = new THREE.Group();
 universalTiltGroup.position.y = FIELD_CENTER_Y;
 scene.add(universalTiltGroup);
@@ -110,8 +124,7 @@ flipGroup.add(shellGroup, lineGroup, tracerGroup, vfxGroup);
 universalTiltGroup.add(fieldGroup);
 
 const modelGroup = createFemaleModel();
-modelGroup.position.y = -FIELD_CENTER_Y;
-universalTiltGroup.add(modelGroup);
+scene.add(modelGroup);
 
 const capNorth = new THREE.Mesh(
   new THREE.SphereGeometry(0.055, 24, 16),
@@ -175,6 +188,10 @@ grid.material.transparent = true;
 grid.material.opacity = 0.11;
 scene.add(grid);
 
+const fieldProbes = new FieldProbes(scene, [0, FIELD_CENTER_Y, 0]);
+const fieldAxis = new THREE.Vector3();
+const fieldOrientation = new THREE.Quaternion();
+
 renderLegend();
 bindControls();
 syncInputs();
@@ -192,6 +209,11 @@ renderer.setAnimationLoop(() => {
   updateFlipRotation(elapsed);
   updatePolarity(elapsed);
   updateVfx(elapsed);
+  if (state.showElectrons || state.showCompasses) {
+    flipGroup.getWorldQuaternion(fieldOrientation);
+    fieldAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
+    fieldProbes.update(delta, fieldAxis, state.clt / 1000);
+  }
   updateViewerFieldReadout();
   controls.update();
   renderer.render(scene, camera);
@@ -378,6 +400,27 @@ function bindControls() {
   bindRangePair(elements.flipsRange, elements.flipsInput, "flips", 0, 10, 2, noop);
   bindRangePair(elements.tiltRange, elements.tiltInput, "tilt", -45, 45, 1, updateAxialTilt);
   bindRangePair(elements.universalTiltRange, elements.universalTiltInput, "universalTilt", -180, 180, 1, updateAxialTilt);
+  for (const [element, key] of [
+    [elements.electronsToggle, "showElectrons"],
+    [elements.compassesToggle, "showCompasses"],
+    [elements.electronTrailsToggle, "electronTrails"],
+  ]) {
+    element.addEventListener("change", () => {
+      state[key] = element.checked;
+      syncProbeControls();
+    });
+  }
+  for (const [element, key, min, max] of [
+    [elements.electronCountRange, "electronCount", 32, 320],
+    [elements.electronSpeedRange, "electronSpeed", 0.1, 3],
+  ]) {
+    element.addEventListener("input", () => {
+      state[key] = clampNumber(element.value, min, max, DEFAULTS[key]);
+      fieldProbes.configure(state.mBand, state.electronCount, state.electronSpeed);
+      syncProbeControls();
+    });
+  }
+  elements.respawnElectronsButton.addEventListener("click", () => fieldProbes.respawn());
   elements.flipNowButton.addEventListener("click", () => {
     triggerPolarityFlip(clock.elapsedTime);
   });
@@ -440,6 +483,21 @@ function syncInputs() {
   elements.tiltInput.value = formatInputNumber(state.tilt, 1);
   elements.universalTiltRange.value = state.universalTilt;
   elements.universalTiltInput.value = formatInputNumber(state.universalTilt, 1);
+  syncProbeControls();
+}
+
+function syncProbeControls() {
+  elements.electronsToggle.checked = state.showElectrons;
+  elements.compassesToggle.checked = state.showCompasses;
+  elements.electronTrailsToggle.checked = state.electronTrails;
+  elements.electronCountRange.value = state.electronCount;
+  elements.electronSpeedRange.value = state.electronSpeed;
+  elements.electronCountOutput.value = state.electronCount;
+  elements.electronSpeedOutput.value = `${formatInputNumber(state.electronSpeed, 1)}×`;
+  for (const element of [elements.electronCountRange, elements.electronSpeedRange, elements.electronTrailsToggle, elements.respawnElectronsButton]) {
+    element.disabled = !state.showElectrons;
+  }
+  fieldProbes.setVisibility(state.showElectrons, state.showCompasses, state.electronTrails);
 }
 
 function noop() {}
@@ -498,6 +556,7 @@ function updateField() {
   updateIntensityReadouts();
   updateLegendDistances();
   updateViewerFieldReadout();
+  fieldProbes.configure(state.mBand, state.electronCount, state.electronSpeed);
 }
 
 function createBandHalo(radius, color, opacity) {

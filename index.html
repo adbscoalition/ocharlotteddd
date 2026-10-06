@@ -103,8 +103,41 @@
                 <small>deg</small>
               </div>
             </div>
-            <small class="control-hint" id="universalTiltHint">Tilts the model and all field bands together.</small>
+            <small class="control-hint" id="universalTiltHint">Tilts all field bands together. The human stays upright.</small>
           </label>
+        </section>
+
+        <section class="panel-section" aria-labelledby="probesHeading">
+          <h2 id="probesHeading">Electrons &amp; Compasses</h2>
+          <label class="toggle-row">
+            <span>Show free electrons</span>
+            <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
+          </label>
+          <p class="control-hint" id="electronsHint">Free electrons bend under magnetic forces. Motion is slowed and scaled for visibility.</p>
+          <label class="control-row">
+            <span>Electron count</span>
+            <div class="range-pair">
+              <input id="electronCountRange" type="range" min="32" max="320" step="16" value="160" aria-label="Electron count" disabled />
+              <output id="electronCountOutput" for="electronCountRange">160</output>
+            </div>
+          </label>
+          <label class="control-row">
+            <span>Launch speed</span>
+            <div class="range-pair">
+              <input id="electronSpeedRange" type="range" min="0.1" max="3" step="0.1" value="1" aria-label="Electron launch speed" disabled />
+              <output id="electronSpeedOutput" for="electronSpeedRange">1×</output>
+            </div>
+          </label>
+          <label class="toggle-row">
+            <span>Electron trails</span>
+            <input id="electronTrailsToggle" type="checkbox" checked disabled />
+          </label>
+          <button id="respawnElectronsButton" class="probe-button" type="button" disabled>Release new electrons</button>
+          <label class="toggle-row">
+            <span>Show compasses</span>
+            <input id="compassesToggle" type="checkbox" aria-describedby="compassesHint" />
+          </label>
+          <p class="control-hint" id="compassesHint">Red needle tips point along the local magnetic field in 3D. With no field, the needles fade.</p>
         </section>
 
         <section class="panel-section readout-grid" aria-label="Live readouts">
