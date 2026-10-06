@@ -16,7 +16,7 @@ const BAND_CONFIG = [
 
 const DEFAULTS = {
   clt: 1000,
-  mBand: 4,
+  mBand: calculateMBand(1000),
   rpm: 120,
   flips: 0.3,
   tilt: 13,
@@ -24,7 +24,7 @@ const DEFAULTS = {
   showElectrons: false,
   electronCount: 800,
   electronSpeed: 1,
-  electronTrails: true,
+  electronTrails: false,
   showCompasses: false,
   showFieldLines: true,
 };
@@ -386,8 +386,7 @@ function updateCameraForRadius(radius) {
 }
 
 function bindControls() {
-  bindDecimalInput(elements.cltInput, "clt", 0, 50000, 2, updateIntensityReadouts);
-  bindDecimalInput(elements.mBandInput, "mBand", 0.01, 250, 2, updateField);
+  bindDecimalInput(elements.cltInput, "clt", 0, 50000, 2, updateAutomaticMBand);
   bindRangePair(elements.rpmRange, elements.rpmInput, "rpm", 0, 350, 1, noop);
   bindRangePair(elements.flipsRange, elements.flipsInput, "flips", 0, 10, 2, noop);
   bindRangePair(elements.tiltRange, elements.tiltInput, "tilt", -45, 45, 1, updateAxialTilt);
@@ -534,7 +533,23 @@ function updateAxialTilt() {
   fieldGroup.rotation.z = THREE.MathUtils.degToRad(state.tilt);
 }
 
+function calculateMBand(clt) {
+  // The formula's continuous limit at zero CLT is 1.09 meters.
+  if (clt <= 0) return 1.09;
+  return 1.09 + 40.70 / (1 + (5142 / clt) ** 1.542);
+}
+
+function updateAutomaticMBand() {
+  if (calculateMBand(state.clt) === state.mBand) {
+    updateIntensityReadouts();
+    return;
+  }
+  updateField();
+}
+
 function updateField() {
+  state.mBand = calculateMBand(state.clt);
+  elements.mBandInput.value = formatInputNumber(state.mBand, 2);
   clearObjects(fieldLines, lineGroup);
   clearObjects(fieldShells, shellGroup);
   clearObjects(tracers, tracerGroup);

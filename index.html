@@ -53,10 +53,12 @@
           <label class="control-row">
             <span>M-band radius</span>
             <div class="unit-input">
-              <input id="mBandInput" type="text" inputmode="decimal" value="4" />
+              <input id="mBandInput" type="text" value="4.11" readonly aria-describedby="mBandHint" />
               <small>m</small>
             </div>
           </label>
+
+          <p class="control-hint" id="mBandHint">Calculated automatically from CLT.</p>
 
           <label class="control-row">
             <span>Rotation</span>
@@ -154,7 +156,7 @@
           </label>
           <label class="toggle-row">
             <span>Electron trails</span>
-            <input id="electronTrailsToggle" type="checkbox" checked disabled />
+            <input id="electronTrailsToggle" type="checkbox" disabled />
           </label>
           <p class="control-hint">Trails record actual motion through space. Past positions stay fixed as the field rotates or particles change bands.</p>
           <button id="respawnElectronsButton" class="probe-button" type="button" disabled>Inject fresh electrons</button>
@@ -176,7 +178,7 @@
           </div>
           <div class="readout">
             <span>Field scale</span>
-            <strong id="fieldScaleReadout">MH R 26.0 m</strong>
+            <strong id="fieldScaleReadout">MH R 26.7 m</strong>
           </div>
           <div class="readout">
             <span>Model height</span>

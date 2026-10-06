@@ -14,7 +14,9 @@ Then open:
 http://127.0.0.1:5173/
 ```
 
-The app supports independent CLT intensity and M-band radius controls, true rpm rotation, polarity flips per minute, magnetic axial tilt, colored CLT radius bands, live microtesla output, and tungsten concentration.
+The app supports CLT intensity and an automatically calculated M-band radius, true rpm rotation, polarity flips per minute, magnetic axial tilt, colored CLT radius bands, live microtesla output, and tungsten concentration.
+
+The M-band radius follows `M = 1.09 + 40.70 / (1 + (5142 / CLT)^1.542)` in meters. Changing CLT updates the radius, all field bands, electron guides, compasses, camera framing and distance readouts. The radius display is read-only and rounded to two decimals; geometry uses the unrounded result. At zero CLT, the formula’s limit is 1.09 m. At the default 1,000 CLT, M is approximately 4.10703 m; at 5,142 CLT, it is 21.44 m.
 
 Universal axial tilt (-180° to 180°) tilts all field bands together around the field center while the human stays upright. It starts at 0° and combines with the existing magnetic axial tilt, rotation, and polarity flips. Reset restores both tilt controls to their defaults.
 
@@ -24,7 +26,7 @@ Each captured particle has its own continuous flux radius and azimuth from the *
 
 At pole encounters particles may stay on the same band, transfer to a neighboring band, or eject. Transfers are stochastic, biased by field strength and particle energy. Low pitch angles enter the loss cone; high energy or weak confinement permits escape. Most pole ejections (80%) are polar, with a minority (20%) in random directions. Ejected particles continue to feel magnetic deflection, and magnetic-only free flight conserves speed through the Boris integrator. Loss of confinement releases a particle at its current position with velocity calculated from actual world displacement. Live state, outcome and current-position band counts show distribution and transport.
 
-Trails are a fixed-time history of actual **world-space positions**, sampled at 60 Hz for 0.65 seconds. Field rotation, tilt, capture, band changes and ejection never reproject or reset old samples. Each sample retains its original state color, with only its age fading. Rotation is interpolated across the 120 Hz physics substeps to avoid artificial zigzags from frame-level pose changes. Only replacing an escaped particle or manually injecting a new population resets its history.
+Trails are disabled by default and can be enabled with **Electron trails**. They are a fixed-time history of actual **world-space positions**, sampled at 60 Hz for 0.65 seconds. Field rotation, tilt, capture, band changes and ejection never reproject or reset old samples. Each sample retains its original state color, with only its age fading. Rotation is interpolated across the 120 Hz physics substeps to avoid artificial zigzags from frame-level pose changes. Replacing an escaped particle resets that particle’s history. Fresh injection, reset, or changing the radius, count or launch-speed settings starts a new population and history.
 
 When an ejected or free particle crosses outside the rotating MH ellipsoid, it is replaced one-for-one exactly 100 meters beyond the polar MH surface, heading toward the field at 15 m/s. Incoming speed is initially fixed independently of the launch-speed control. Incoming particles remain subject to magnetic deflection and are exempt from escape detection until they enter MH; they count as Outside during approach. Zero CLT leaves particles ballistic and disables capture and guidance.
 
