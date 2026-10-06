@@ -117,10 +117,26 @@
             <span>Show free electrons</span>
             <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
           </label>
-          <p class="control-hint" id="electronsHint">Stronger fields draw electrons toward the center and capture them. Rotation carries them around; weaker fields release them. Illustrative capture model.</p>
-          <p class="control-hint">Cyan: free · Green: drawing in · Gold: captured · White: released</p>
+          <p class="control-hint" id="electronsHint">Electrons enter through the poles and spiral along magnetic lines. They can stay on a band, transfer to another, or eject. Most ejections follow the poles; some leave in random directions. Illustrative transport model.</p>
+          <p class="control-hint">Cyan: free · Green: polar entry · Gold: guided · White: ejected</p>
           <p class="control-hint">Capture is active throughout the field, even with lines hidden.</p>
+          <p class="control-hint">Escaped electrons are replaced 100 m beyond MH, incoming at 15 m/s.</p>
           <p class="control-hint particle-readout" id="electronStateOutput">Electrons hidden</p>
+          <p class="control-hint particle-readout" id="electronOutcomeOutput"></p>
+          <div id="electronBandOutput" class="electron-bands" aria-label="Electron band distribution" hidden>
+            <p class="control-hint">Band distribution inside MH · distance from the magnetic axis</p>
+            <div class="band-count-grid">
+              <span>NS <strong data-band-index="0">0</strong></span>
+              <span>CE <strong data-band-index="1">0</strong></span>
+              <span>E <strong data-band-index="2">0</strong></span>
+              <span>M <strong data-band-index="3">0</strong></span>
+              <span>PS <strong data-band-index="4">0</strong></span>
+              <span>MS <strong data-band-index="5">0</strong></span>
+              <span>MP <strong data-band-index="6">0</strong></span>
+              <span>MH <strong data-band-index="7">0</strong></span>
+              <span>Outside <strong data-band-index="8">0</strong></span>
+            </div>
+          </div>
           <label class="control-row">
             <span>Electron count</span>
             <div class="range-pair">
@@ -139,7 +155,8 @@
             <span>Electron trails</span>
             <input id="electronTrailsToggle" type="checkbox" checked disabled />
           </label>
-          <button id="respawnElectronsButton" class="probe-button" type="button" disabled>Release new electrons</button>
+          <p class="control-hint">Guided trails rotate with the field. Incoming and ejected trails show motion through space.</p>
+          <button id="respawnElectronsButton" class="probe-button" type="button" disabled>Inject fresh electrons</button>
           <label class="toggle-row">
             <span>Show compasses</span>
             <input id="compassesToggle" type="checkbox" aria-describedby="compassesHint" />

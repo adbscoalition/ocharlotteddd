@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "./OrbitControls.js";
 import { FieldProbes } from "./field-probes.js";
+import { sampleFieldLine } from "./field-lines.mjs";
 
 const BAND_CONFIG = [
   { id: "ns", label: "NS", name: "Polar", multiplier: 0.045, color: "#ff2f2f", opacity: 0.78 },
@@ -61,6 +62,8 @@ const elements = {
   electronSpeedOutput: document.querySelector("#electronSpeedOutput"),
   electronTrailsToggle: document.querySelector("#electronTrailsToggle"),
   electronStateOutput: document.querySelector("#electronStateOutput"),
+  electronBandOutput: document.querySelector("#electronBandOutput"),
+  electronOutcomeOutput: document.querySelector("#electronOutcomeOutput"),
   respawnElectronsButton: document.querySelector("#respawnElectronsButton"),
   compassesToggle: document.querySelector("#compassesToggle"),
   fieldLinesToggle: document.querySelector("#fieldLinesToggle"),
@@ -181,6 +184,7 @@ const fieldProbes = new FieldProbes(scene, [0, FIELD_CENTER_Y, 0]);
 const fieldAxis = new THREE.Vector3();
 const fieldSpinAxis = new THREE.Vector3();
 const fieldOrientation = new THREE.Quaternion();
+const spinOrientation = new THREE.Quaternion();
 
 renderLegend();
 bindControls();
@@ -202,9 +206,9 @@ renderer.setAnimationLoop(() => {
   if (state.showElectrons || state.showCompasses) {
     flipGroup.getWorldQuaternion(fieldOrientation);
     fieldAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
-    universalTiltGroup.getWorldQuaternion(fieldOrientation);
-    fieldSpinAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
-    fieldProbes.update(delta, fieldAxis, state.clt / 1000, fieldSpinAxis, radiansPerSecond);
+    universalTiltGroup.getWorldQuaternion(spinOrientation);
+    fieldSpinAxis.set(0, 1, 0).applyQuaternion(spinOrientation);
+    fieldProbes.update(delta, fieldAxis, state.clt / 1000, fieldSpinAxis, radiansPerSecond, fieldOrientation);
     updateElectronStateReadout();
   }
   updateViewerFieldReadout();
@@ -409,7 +413,10 @@ function bindControls() {
       syncProbeControls();
     });
   }
-  elements.respawnElectronsButton.addEventListener("click", () => fieldProbes.respawn());
+  elements.respawnElectronsButton.addEventListener("click", () => {
+    fieldProbes.respawn();
+    updateElectronStateReadout();
+  });
   elements.flipNowButton.addEventListener("click", () => {
     triggerPolarityFlip(clock.elapsedTime);
   });
@@ -492,15 +499,32 @@ function syncProbeControls() {
   shellGroup.visible = state.showFieldLines;
   tracerGroup.visible = state.showFieldLines;
   dust.points.visible = state.showFieldLines;
+  floor.material.transparent = state.showElectrons;
+  floor.material.opacity = state.showElectrons ? 0.15 : 1;
+  floor.material.depthWrite = !state.showElectrons;
+  floor.material.needsUpdate = true;
   updateElectronStateReadout();
 }
 
 function updateElectronStateReadout() {
   const counts = fieldProbes.counts;
   const text = state.showElectrons
-    ? `${counts.free} free · ${counts.capturing} drawing in · ${counts.captured} captured · ${counts.released} released`
+    ? `${counts.free} free (${fieldProbes.inboundCount} inbound) · ${counts.capturing} entering poles · ${counts.captured} guided · ${counts.released} ejected · ${fieldProbes.ejections} total ejections`
     : "Electrons hidden";
   if (elements.electronStateOutput.textContent !== text) elements.electronStateOutput.textContent = text;
+  const events = fieldProbes.events;
+  const outcomeText = state.showElectrons
+    ? `${events.stays} same band · ${events.bandChanges} band transfers · ${events.poleEjections} pole ejections · ${events.randomEjections} random ejections`
+    : "";
+  if (elements.electronOutcomeOutput.textContent !== outcomeText) elements.electronOutcomeOutput.textContent = outcomeText;
+  elements.electronBandOutput.hidden = !state.showElectrons;
+  if (state.showElectrons) {
+    const bandCounts = fieldProbes.bandCounts;
+    for (let i = 0; i < bandCounts.length; i += 1) {
+      const output = elements.electronBandOutput.querySelector(`[data-band-index="${i}"]`);
+      if (output.textContent !== String(bandCounts[i])) output.textContent = bandCounts[i];
+    }
+  }
 }
 
 function noop() {}
@@ -557,7 +581,10 @@ function updateField() {
   updateIntensityReadouts();
   updateLegendDistances();
   updateViewerFieldReadout();
+  flipGroup.getWorldQuaternion(fieldOrientation);
+  fieldProbes.setOrientation(fieldOrientation);
   fieldProbes.configure(state.mBand, state.electronCount, state.electronSpeed);
+  updateElectronStateReadout();
 }
 
 function createBandHalo(radius, color, opacity) {
@@ -590,17 +617,10 @@ function getFluxLineCount(bandId) {
 
 function createDipoleLoop(radius, phi, color, opacity, tubeRadius) {
   const points = [];
-  const radialDirection = new THREE.Vector3(Math.cos(phi), 0, Math.sin(phi));
-  const verticalPull = Math.max(0.58, radius * FIELD_Y_SCALE * 0.62);
-  const phaseLift = Math.sin(phi * 2.0) * radius * 0.06;
+  const point = [0, 0, 0];
   for (let i = 0; i <= 160; i += 1) {
-    const t = i / 160;
-    const theta = Math.PI * t;
-    const sin = Math.sin(theta);
-    const cos = Math.cos(theta);
-    const lateral = radius * FIELD_XZ_SCALE * sin ** 2.22;
-    const y = POLE_DISTANCE * cos + verticalPull * sin ** 1.08 * cos + phaseLift * sin ** 2;
-    points.push(new THREE.Vector3(radialDirection.x * lateral, y, radialDirection.z * lateral));
+    sampleFieldLine(radius, phi, i / 160, point);
+    points.push(new THREE.Vector3().fromArray(point));
   }
 
   const curve = new THREE.CatmullRomCurve3(points);

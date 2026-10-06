@@ -237,6 +237,29 @@ p.control-hint {
   line-height: 1.6;
 }
 
+.band-count-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 6px;
+  margin-top: 8px;
+}
+
+.band-count-grid span {
+  display: flex;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 5px;
+  background: var(--panel-strong);
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.band-count-grid strong {
+  color: var(--text);
+}
+
 .toggle-row {
   display: flex;
   align-items: center;

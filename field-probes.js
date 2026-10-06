@@ -1,5 +1,6 @@
 import * as THREE from "three";
-import { advanceFieldParticle, sampleMagneticField } from "./electron-physics.mjs";
+import { advanceFieldParticle, initializeFieldParticle, placeIncomingReplacement, sampleMagneticField } from "./electron-physics.mjs";
+import { particleBand, fieldMapDistance, MH_MULTIPLIER, transformFieldVector } from "./field-lines.mjs";
 
 const STEP = 1 / 120;
 const TRAIL_LENGTH = 24;
@@ -21,6 +22,14 @@ export class FieldProbes {
     this.field = [0, 0, 0];
     this.moment = [0, 1, 0];
     this.spinAxis = [0, 1, 0];
+    this.orientation = [0, 0, 0, 1];
+    this.ejections = 0;
+    this.events = { stays: 0, bandChanges: 0, poleEjections: 0, randomEjections: 0 };
+    this.replacements = 0;
+    this.inboundCount = 0;
+    this.mapPoint = [0, 0, 0];
+    this.trailPoint = [0, 0, 0];
+    this.bandCounts = new Array(9).fill(0);
     this.counts = { free: 0, capturing: 0, captured: 0, released: 0 };
     this.direction = new THREE.Vector3();
     this.electronGroup = new THREE.Group();
@@ -117,8 +126,7 @@ export class FieldProbes {
     this.trails.geometry.setAttribute("position", new THREE.BufferAttribute(this.trailPositions, 3).setUsage(THREE.DynamicDrawUsage));
     this.trails.geometry.setAttribute("color", new THREE.BufferAttribute(colors, 3));
     this.particles = Array.from({ length: count }, () => ({
-      position: [0, 0, 0], velocity: [0, 0, 0], carriedVelocity: [0, 0, 0], history: new Float32Array(TRAIL_LENGTH * 3), head: 0, age: 0,
-      phase: "free", launchSpeed: 0.65 * speed, releaseCooldown: 0,
+      position: [0, 0, 0], velocity: [0, 0, 0], history: new Float32Array(TRAIL_LENGTH * 3), head: 0, age: 0,
     }));
     this.respawn();
     for (const compass of this.compasses) {
@@ -131,31 +139,22 @@ export class FieldProbes {
     }
   }
 
-  releaseParticle(particle) {
-    const angle = Math.random() * Math.PI * 2;
-    const y = Math.random() * 2 - 1;
-    const radial = Math.sqrt(1 - y * y);
-    const distance = this.radius * (0.45 + Math.random() * 1.85);
-    particle.position[0] = this.center[0] + Math.cos(angle) * radial * distance;
-    particle.position[1] = this.center[1] + y * distance;
-    particle.position[2] = this.center[2] + Math.sin(angle) * radial * distance;
-    const velocityAngle = Math.random() * Math.PI * 2;
-    const velocityY = Math.random() * 2 - 1;
-    const velocityRadial = Math.sqrt(1 - velocityY * velocityY);
-    const speed = this.radius * 0.65 * this.speed;
-    particle.velocity[0] = Math.cos(velocityAngle) * velocityRadial * speed;
-    particle.velocity[1] = velocityY * speed;
-    particle.velocity[2] = Math.sin(velocityAngle) * velocityRadial * speed;
+  releaseParticle(particle, replacement = false) {
+    initializeFieldParticle(particle, this.center, this.radius, this.orientation, this.speed);
+    if (replacement) {
+      placeIncomingReplacement(particle, this.center, this.radius, this.orientation);
+      this.replacements += 1;
+    }
     particle.age = 0;
-    particle.phase = "free";
-    particle.releaseCooldown = 0;
-    particle.launchSpeed = 0.65 * this.speed;
-    particle.carriedVelocity[0] = particle.carriedVelocity[1] = particle.carriedVelocity[2] = 0;
     particle.head = 0;
+    particle.historyFrame = "world";
     for (let j = 0; j < TRAIL_LENGTH; j += 1) particle.history.set(particle.position, j * 3);
   }
 
   respawn() {
+    this.ejections = 0;
+    this.events = { stays: 0, bandChanges: 0, poleEjections: 0, randomEjections: 0 };
+    this.replacements = 0;
     for (const particle of this.particles) this.releaseParticle(particle);
     this.accumulator = 0;
     this.writeGeometry();
@@ -168,7 +167,14 @@ export class FieldProbes {
     if (!electrons) this.accumulator = 0;
   }
 
-  update(delta, axis, intensity, spinAxis = axis, angularSpeed = 0) {
+  setOrientation(orientation) {
+    this.orientation[0] = orientation.x;
+    this.orientation[1] = orientation.y;
+    this.orientation[2] = orientation.z;
+    this.orientation[3] = orientation.w;
+  }
+
+  update(delta, axis, intensity, spinAxis = axis, angularSpeed = 0, orientation = null) {
     if (!this.electronGroup.visible && !this.compassGroup.visible) return;
     this.moment[0] = axis.x;
     this.moment[1] = axis.y;
@@ -176,26 +182,37 @@ export class FieldProbes {
     this.spinAxis[0] = spinAxis.x;
     this.spinAxis[1] = spinAxis.y;
     this.spinAxis[2] = spinAxis.z;
+    if (orientation) this.setOrientation(orientation);
     if (this.electronGroup.visible) {
       this.accumulator += Math.min(delta, 0.05);
       while (this.accumulator >= STEP) {
         for (const particle of this.particles) {
-          advanceFieldParticle(particle, this.center, this.moment, this.radius, intensity, this.spinAxis, angularSpeed, STEP, this.field);
+          const previousPhase = particle.phase;
+          const previousVisits = particle.visits;
+          advanceFieldParticle(particle, this.center, this.radius, intensity, this.orientation, angularSpeed, STEP, this.spinAxis);
+          if (particle.phase === "released" && previousPhase !== "released") this.ejections += 1;
+          if (particle.visits > previousVisits) {
+            const outcome = { stay: "stays", band_change: "bandChanges", eject_pole: "poleEjections", eject_random: "randomEjections" }[particle.lastOutcome];
+            if (outcome) this.events[outcome] += 1;
+          }
           particle.age += STEP;
-          const distance = Math.hypot(
-            particle.position[0] - this.center[0],
-            particle.position[1] - this.center[1],
-            particle.position[2] - this.center[2],
-          );
-          if (distance > this.radius * 6.5) {
-            this.releaseParticle(particle);
+          if (!particle.inbound && (particle.phase === "released" || particle.phase === "free")
+            && fieldMapDistance(particle.position, this.center, this.orientation, this.mapPoint) > this.radius * MH_MULTIPLIER) {
+            this.releaseParticle(particle, true);
           }
         }
         this.accumulator -= STEP;
       }
       for (const particle of this.particles) {
+        const frame = particle.phase === "captured" ? "field" : "world";
+        const point = frame === "field" ? particle.local : particle.position;
+        if (particle.historyFrame !== frame) {
+          for (let j = 0; j < TRAIL_LENGTH; j += 1) particle.history.set(point, j * 3);
+          particle.historyFrame = frame;
+          particle.head = 0;
+        }
         particle.head = (particle.head + 1) % TRAIL_LENGTH;
-        particle.history.set(particle.position, particle.head * 3);
+        particle.history.set(point, particle.head * 3);
       }
       this.writeGeometry();
     }
@@ -212,9 +229,14 @@ export class FieldProbes {
   writeGeometry() {
     if (!this.positions) return;
     this.counts = { free: 0, capturing: 0, captured: 0, released: 0 };
+    this.bandCounts.fill(0);
+    this.inboundCount = 0;
     let trailColorsChanged = false;
     this.particles.forEach((particle, i) => {
       this.counts[particle.phase] += 1;
+      if (particle.inbound) this.inboundCount += 1;
+      const outside = particle.inbound || fieldMapDistance(particle.position, this.center, this.orientation, this.mapPoint) > this.radius * MH_MULTIPLIER;
+      this.bandCounts[outside ? 8 : particleBand(particle.position, this.center, this.moment, this.radius)] += 1;
       this.colors.set(PARTICLE_COLORS[particle.phase], i * 3);
       this.positions.set(particle.position, i * 3);
       if (!this.trails.visible) return;
@@ -234,9 +256,15 @@ export class FieldProbes {
         const a = ((particle.head - j + TRAIL_LENGTH) % TRAIL_LENGTH) * 3;
         const b = ((particle.head - j - 1 + TRAIL_LENGTH) % TRAIL_LENGTH) * 3;
         const offset = (i * (TRAIL_LENGTH - 1) + j) * 6;
-        for (let k = 0; k < 3; k += 1) {
-          this.trailPositions[offset + k] = particle.history[a + k];
-          this.trailPositions[offset + 3 + k] = particle.history[b + k];
+        for (let endpoint = 0; endpoint < 2; endpoint += 1) {
+          const source = endpoint === 0 ? a : b;
+          const target = offset + endpoint * 3;
+          for (let k = 0; k < 3; k += 1) this.trailPoint[k] = particle.history[source + k];
+          if (particle.historyFrame === "field") {
+            transformFieldVector(this.trailPoint, this.orientation, this.trailPoint);
+            for (let k = 0; k < 3; k += 1) this.trailPoint[k] += this.center[k];
+          }
+          this.trailPositions.set(this.trailPoint, target);
         }
       }
     });

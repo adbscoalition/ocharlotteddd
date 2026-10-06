@@ -58,84 +58,189 @@ test('dipole field tracks strength, polarity, distance and rotation', () => {
   assert.ok(zero.every(value => value === 0));
 });
 
-const { advanceFieldParticle } = await import('../electron-physics.mjs');
-const particleAt = (position, velocity = [0, 0, 0]) => ({
-  position: [...position], velocity: [...velocity], carriedVelocity: [0, 0, 0],
-  phase: 'free', launchSpeed: 0.65, releaseCooldown: 0,
-});
-const evolve = (particle, intensity, rpm, seconds, radius = 4, center = [0, 0, 0], axis = [0, 1, 0]) => {
-  const field = [0, 0, 0];
-  for (let i = 0; i < seconds * 120; i += 1) {
-    advanceFieldParticle(particle, center, axis, radius, intensity, axis, rpm * Math.PI * 2 / 60, 1 / 120, field);
+const { advanceFieldParticle, initializeFieldParticle } = await import('../electron-physics.mjs');
+const { sampleFieldLine, buildFieldLineArc, fieldLineParameter, particleBand, transformFieldVector } = await import('../field-lines.mjs');
+const identity = [0,0,0,1];
+const seeded = (seed = 42) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
+const fresh = (random = seeded()) => { const p = {}; initializeFieldParticle(p,[0,0,0],4,identity,1,random); return p; };
+const guided = (band = 3, fraction = 0.3) => {
+  const p = fresh();
+  p.guideBand = band; p.guideRadius = 4 * [0.045,0.2,0.5,1,1.7,3.5,4.5,6.5][band];
+  p.arc = buildFieldLineArc(p.guideRadius,p.phi); p.lineDistance = p.arc[64] * fraction;
+  p.lineDirection = 1; p.phase = 'captured'; p.gyroScale = 0; p.pitch = 0.8;
+  sampleFieldLine(p.guideRadius,p.phi,fieldLineParameter(p.arc,p.lineDistance),p.local);
+  p.position = [...p.local];
+  return p;
+};
+const evolve = (p,intensity,seconds,rpm=0,radius=4) => {
+  for(let i=0;i<seconds*120;i++) {
+    const angle=i/120*rpm*Math.PI*2/60;
+    const q=[0,Math.sin(angle/2),0,Math.cos(angle/2)];
+    advanceFieldParticle(p,[0,0,0],radius,intensity,q,rpm*Math.PI*2/60,1/120);
   }
 };
 
-test('zero field leaves a free particle unconfined even at high RPM', () => {
-  const p = particleAt([4, 0, 0], [1, 0.5, 0]);
-  evolve(p, 0, 350, 1);
-  near(p.position[0], 5); near(p.position[1], 0.5);
-  assert.deepEqual(p.velocity, [1, 0.5, 0]);
-  assert.equal(p.phase, 'free');
+test('polar inlets launch near both magnetic poles rather than a sphere',()=>{
+  const random=seeded(); let north=0,south=0;
+  for(let i=0;i<100;i++) {
+    const p=fresh(random);
+    assert.ok(Math.hypot(p.position[0],p.position[2]) <= 4*0.2);
+    assert.ok(Math.abs(p.position[1]) > 0.72+4*0.5);
+    if(p.entryPole>0)north++;else south++;
+  }
+  assert.ok(north>20 && south>20);
 });
 
-test('strong fields capture more particles and hold them closer to the center', () => {
-  const run = intensity => {
-    const particles = Array.from({ length: 24 }, (_, i) => {
-      const angle = i * Math.PI / 12;
-      return particleAt([Math.cos(angle) * 5, (i % 3 - 1) * 0.7, Math.sin(angle) * 5], [0.2, 0.1, 0.2]);
-    });
-    particles.forEach(p => evolve(p, intensity, 120, 8));
-    return { count: particles.filter(p => p.phase === 'captured').length, meanRadius: particles.reduce((sum, p) => sum + Math.hypot(...p.position), 0) / particles.length };
+test('particles enter via a pole and are captured onto a field guide',()=>{
+  const p=fresh(); const pole=p.entryPole;
+  for(let i=0;i<1200 && p.phase!=='captured';i++)advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  assert.equal(p.phase,'captured');
+  assert.equal(p.lineDirection,pole);
+  assert.ok(Math.hypot(p.position[0],p.position[1]-pole*0.72,p.position[2])<0.3);
+});
+
+test('guided motion follows the exact visible curve family and its tangent',()=>{
+  const p=guided(); const before=[...p.position];
+  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  const t=fieldLineParameter(p.arc,p.lineDistance);
+  const expected=sampleFieldLine(p.guideRadius,p.phi,t);
+  p.position.forEach((value,i)=>near(value,expected[i]));
+  const a=sampleFieldLine(p.guideRadius,p.phi,t-0.001), b=sampleFieldLine(p.guideRadius,p.phi,t+0.001);
+  const direction=p.position.map((v,i)=>v-before[i]);
+  const tangent=b.map((v,i)=>v-a[i]);
+  const dot=direction.reduce((sum,v,i)=>sum+v*tangent[i],0)/(Math.hypot(...direction)*Math.hypot(...tangent));
+  assert.ok(dot>0.999);
+});
+
+test('particles exchange bands continuously at pole reflections',()=>{
+  const p=guided(4,0.9999); p.random=()=>0.8; const oldBand=p.guideBand;
+  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  assert.equal(p.phase,'captured'); assert.notEqual(p.guideBand,oldBand);
+  assert.equal(p.lineDirection,-1); assert.equal(p.visits,1);
+  assert.ok(Math.hypot(p.position[0],p.position[1]+0.72,p.position[2])<0.2);
+});
+
+test('loss-cone particles eject outward through a pole',()=>{
+  const p=guided(3,0.9999); p.pitch=0.08; p.random=()=>0.2;
+  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  assert.equal(p.phase,'released'); assert.equal(p.ejectionReason,'loss_cone');
+  assert.ok(p.velocity[1]<0);
+  const before=p.position[1]; evolve(p,1,0.5);
+  assert.ok(p.position[1]<before);
+});
+
+test('weakening confinement ejects particles where they are without teleporting',()=>{
+  const p=guided(6,0.4);
+  advanceFieldParticle(p,[0,0,0],4,1,identity,12,1/120);
+  const before=[...p.position], velocity=[...p.velocity];
+  advanceFieldParticle(p,[0,0,0],4,0,identity,12,1/120);
+  assert.equal(p.phase,'released'); assert.equal(p.ejectionReason,'weak_field');
+  p.position.forEach((v,i)=>near(v,before[i]+velocity[i]/120));
+});
+
+test('zero field leaves free particles ballistic even at high RPM',()=>{
+  const p=fresh(), before=[...p.position], velocity=[...p.velocity];
+  evolve(p,0,1,350);
+  assert.equal(p.phase,'free');
+  p.position.forEach((v,i)=>near(v,before[i]+velocity[i]));
+});
+
+test('field rotation and universal tilt transform guide paths and retain spin velocity',()=>{
+  const p=guided(3,0.3), q=[0,0,Math.sin(Math.PI/4),Math.cos(Math.PI/4)];
+  advanceFieldParticle(p,[1,2,3],4,1,q,12,1/120,[-1,0,0]);
+  const point=transformFieldVector(p.local,q);
+  p.position.forEach((v,i)=>near(v,point[i]+[1,2,3][i]));
+  assert.ok(p.velocity.every(Number.isFinite));
+  const stationary=guided(), rotating=guided();
+  advanceFieldParticle(stationary,[0,0,0],4,1,identity,0,1/120);
+  advanceFieldParticle(rotating,[0,0,0],4,1,identity,12,1/120);
+  assert.ok(Math.hypot(...rotating.velocity)>Math.hypot(...stationary.velocity));
+});
+
+test('band readouts change as a particle travels along an outer guide',()=>{
+  const pole=sampleFieldLine(18,0,0), equator=sampleFieldLine(18,0,0.5);
+  assert.equal(particleBand(pole,[0,0,0],[0,1,0],4),0);
+  assert.equal(particleBand(equator,[0,0,0],[0,1,0],4),6);
+  const q=[0,0,Math.SQRT1_2,Math.SQRT1_2], rotated=transformFieldVector(equator,q);
+  assert.equal(particleBand(rotated,[0,0,0],[-1,0,0],4),6);
+});
+
+test('strength changes retention and guided particles span multiple bands',()=>{
+  const run=intensity=>{
+    const random=seeded(); const ps=Array.from({length:64},()=>fresh(random));
+    ps.forEach(p=>evolve(p,intensity,12,120));
+    return {captured:ps.filter(p=>p.phase==='captured').length, bands:new Set(ps.filter(p=>p.phase==='captured').map(p=>particleBand(p.position,[0,0,0],[0,1,0],4)))};
   };
-  const weak = run(0.02), normal = run(1), strong = run(10);
-  assert.ok(normal.count > weak.count);
-  assert.ok(strong.count >= normal.count);
-  assert.ok(strong.meanRadius < normal.meanRadius);
-  assert.ok(normal.meanRadius < weak.meanRadius);
+  const weak=run(.02), normal=run(1), strong=run(10);
+  assert.ok(normal.captured>weak.captured); assert.ok(strong.captured>=normal.captured);
+  assert.ok(normal.bands.size>=5);
 });
 
-test('captured particles co-rotate faster at higher RPM and around the chosen axis', () => {
-  const slow = particleAt([1.5, 0, 0]), fast = particleAt([1.5, 0, 0]);
-  slow.phase = fast.phase = 'captured';
-  evolve(slow, 1, 0, 0.05);
-  evolve(fast, 1, 120, 0.05);
-  assert.ok(Math.abs(fast.position[2]) > Math.abs(slow.position[2]) + 0.1);
-  const tilted = particleAt([0, 1.5, 0]);
-  tilted.phase = 'captured';
-  evolve(tilted, 1, 120, 0.05, 4, [0,0,0], [-1,0,0]);
-  assert.ok(Math.abs(tilted.position[2]) > 0.1);
-});
-
-test('weakening the field releases captured particles with their rotational motion', () => {
-  const p = particleAt([1.5, 0, 0]);
-  p.phase = 'captured';
-  evolve(p, 1, 120, 0.1);
-  const beforeSpeed = Math.hypot(...p.velocity);
-  evolve(p, 0, 120, 0.05);
-  assert.equal(p.phase, 'released');
-  assert.ok(Math.hypot(...p.velocity) > beforeSpeed + 1);
-  const speed = Math.hypot(...p.velocity);
-  evolve(p, 0, 350, 1);
-  near(Math.hypot(...p.velocity), speed);
-  assert.equal(p.phase, 'released');
-});
-
-test('capture has no forced lifetime and remains stable at maximum strength and RPM', () => {
-  for (const radius of [0.01, 4, 250]) {
-    const p = particleAt([radius * 0.4, 0, 0]);
-    p.phase = 'captured';
-    evolve(p, 50, 350, 30, radius);
+test('transport remains finite at extreme radius, strength, speed and rotation',()=>{
+  for(const radius of [.01,4,250]){
+    const p={};initializeFieldParticle(p,[0,0,0],radius,identity,3,seeded());
+    evolve(p,50,10,350,radius);
     assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
-    assert.equal(p.phase, 'captured');
-    assert.ok(Math.hypot(...p.position) < radius);
   }
 });
 
-test('capture acts between rendered curves and outside the M band', () => {
-  const p = particleAt([7.25, 1.13, -3.54], [0,0,0]);
-  const before = Math.hypot(...p.position);
-  evolve(p, 1, 120, 1);
-  assert.ok(Math.hypot(...p.position) < before);
-  evolve(p, 1, 120, 8);
-  assert.equal(p.phase, 'captured');
+const { placeIncomingReplacement } = await import('../electron-physics.mjs');
+const { fieldMapDistance } = await import('../field-lines.mjs');
+
+test('replacements start exactly 100 meters beyond the polar MH surface at 15 m/s',()=>{
+  const center=[1,2,3],radius=4,q=[0,0,Math.SQRT1_2,Math.SQRT1_2];
+  const p=fresh();
+  placeIncomingReplacement(p,center,radius,q);
+  const distance=Math.hypot(...p.position.map((v,i)=>v-center[i]));
+  near(distance-radius*6.5*1.45,100);
+  near(Math.hypot(...p.velocity),15);
+  const direction=p.position.map((v,i)=>v-center[i]);
+  assert.ok(direction.reduce((sum,v,i)=>sum+v*p.velocity[i],0)<0);
+  assert.ok(p.inbound);
+});
+
+test('inbound replacements travel 15 meters in one second without respawning or entering capture early',()=>{
+  const p=fresh(); placeIncomingReplacement(p,[0,0,0],4,identity);
+  const before=[...p.position];
+  evolve(p,1,1,0);
+  near(Math.hypot(...p.position.map((v,i)=>v-before[i])),15);
+  assert.ok(p.inbound); assert.equal(p.phase,'free');
+  near(Math.hypot(...p.velocity),15);
+});
+
+test('an inbound replacement joins polar capture after crossing the MH boundary',()=>{
+  const p=fresh(); placeIncomingReplacement(p,[0,0,0],4,identity);
+  const before=fieldMapDistance(p.position,[0,0,0],identity);
+  assert.ok(before>26);
+  evolve(p,1,7,0);
+  assert.equal(p.inbound,false);
+  assert.ok(fieldMapDistance(p.position,[0,0,0],identity)<26);
+  p.pitch=0.8; evolve(p,1,6,0);
+  assert.equal(p.phase,'captured');
+});
+
+
+test('a pole reflection can keep the particle on the same band',()=>{
+  const p=guided(4,0.9999); p.random=()=>0.2;
+  const band=p.guideBand, guide=p.guideRadius;
+  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  assert.equal(p.phase,'captured'); assert.equal(p.guideBand,band); near(p.guideRadius,guide);
+  assert.equal(p.lastOutcome,'stay'); assert.equal(p.lineDirection,-1);
+});
+
+test('some pole encounters eject in a random direction',()=>{
+  const p=guided(3,0.9999); p.pitch=0.08; p.random=()=>0.9;
+  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+  assert.equal(p.phase,'released'); assert.equal(p.ejectionRoute,'random');
+  assert.ok(Math.hypot(p.velocity[0],p.velocity[2])>1);
+});
+
+test('most ejections are polar while a minority have random directions',()=>{
+  const random=seeded(123); let polar=0,other=0;
+  for(let i=0;i<1000;i++) {
+    const p=guided(3,0.9999); p.pitch=0.08; p.random=random;
+    advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
+    if(p.ejectionRoute==='pole')polar++;else other++;
+  }
+  assert.ok(polar>700&&polar<900); assert.ok(other>100&&other<300);
 });
