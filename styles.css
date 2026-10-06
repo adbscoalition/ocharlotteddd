@@ -232,6 +232,11 @@ p.control-hint {
   color: var(--muted);
 }
 
+.particle-readout {
+  font-variant-numeric: tabular-nums;
+  line-height: 1.6;
+}
+
 .toggle-row {
   display: flex;
   align-items: center;

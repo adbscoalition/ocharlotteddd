@@ -110,15 +110,22 @@
         <section class="panel-section" aria-labelledby="probesHeading">
           <h2 id="probesHeading">Electrons &amp; Compasses</h2>
           <label class="toggle-row">
+            <span>Show field lines</span>
+            <input id="fieldLinesToggle" type="checkbox" checked />
+          </label>
+          <label class="toggle-row">
             <span>Show free electrons</span>
             <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
           </label>
-          <p class="control-hint" id="electronsHint">Free electrons bend under magnetic forces. Motion is slowed and scaled for visibility.</p>
+          <p class="control-hint" id="electronsHint">Stronger fields draw electrons toward the center and capture them. Rotation carries them around; weaker fields release them. Illustrative capture model.</p>
+          <p class="control-hint">Cyan: free · Green: drawing in · Gold: captured · White: released</p>
+          <p class="control-hint">Capture is active throughout the field, even with lines hidden.</p>
+          <p class="control-hint particle-readout" id="electronStateOutput">Electrons hidden</p>
           <label class="control-row">
             <span>Electron count</span>
             <div class="range-pair">
-              <input id="electronCountRange" type="range" min="32" max="320" step="16" value="160" aria-label="Electron count" disabled />
-              <output id="electronCountOutput" for="electronCountRange">160</output>
+              <input id="electronCountRange" type="range" min="100" max="2000" step="100" value="800" aria-label="Electron count" disabled />
+              <output id="electronCountOutput" for="electronCountRange">800</output>
             </div>
           </label>
           <label class="control-row">

@@ -21,10 +21,11 @@ const DEFAULTS = {
   tilt: 13,
   universalTilt: 0,
   showElectrons: false,
-  electronCount: 160,
+  electronCount: 800,
   electronSpeed: 1,
   electronTrails: true,
   showCompasses: false,
+  showFieldLines: true,
 };
 
 const FIELD_CENTER_Y = 0.82;
@@ -34,7 +35,6 @@ const FIELD_Y_SCALE = 1.45;
 const FIELD_XZ_SCALE = 1;
 const POLE_DISTANCE = 0.72;
 const DUST_COUNT = 420;
-const FLIP_FLASH_SECONDS = 1.2;
 const FOG_BANDS = new Set(["ns", "ce", "e", "m", "ps", "ms", "mp", "mh"]);
 
 const elements = {
@@ -60,8 +60,10 @@ const elements = {
   electronSpeedRange: document.querySelector("#electronSpeedRange"),
   electronSpeedOutput: document.querySelector("#electronSpeedOutput"),
   electronTrailsToggle: document.querySelector("#electronTrailsToggle"),
+  electronStateOutput: document.querySelector("#electronStateOutput"),
   respawnElectronsButton: document.querySelector("#respawnElectronsButton"),
   compassesToggle: document.querySelector("#compassesToggle"),
+  fieldLinesToggle: document.querySelector("#fieldLinesToggle"),
   resetButton: document.querySelector("#resetButton"),
   legend: document.querySelector("#legend"),
   polarityStatus: document.querySelector("#polarityStatus"),
@@ -80,7 +82,6 @@ let tracers = [];
 let fieldCurves = [];
 let polarityPositive = true;
 let lastFlipBucket = 0;
-let lastFlipAt = -999;
 let currentDisplayRadius = 6.5;
 let flipStartRotation = 0;
 let flipTargetRotation = 0;
@@ -152,18 +153,6 @@ const flipWave = new THREE.Mesh(
 );
 vfxGroup.add(flipWave);
 
-const axisBeam = new THREE.Mesh(
-  new THREE.CylinderGeometry(0.018, 0.018, 2.5, 16, 1, true),
-  new THREE.MeshBasicMaterial({
-    color: 0xe8fff2,
-    transparent: true,
-    opacity: 0.34,
-    blending: THREE.AdditiveBlending,
-    depthWrite: false,
-  }),
-);
-flipGroup.add(axisBeam);
-
 scene.add(new THREE.HemisphereLight(0xfff4dd, 0x26292b, 2.2));
 const keyLight = new THREE.DirectionalLight(0xffffff, 2.9);
 keyLight.position.set(3, 5, 4);
@@ -190,6 +179,7 @@ scene.add(grid);
 
 const fieldProbes = new FieldProbes(scene, [0, FIELD_CENTER_Y, 0]);
 const fieldAxis = new THREE.Vector3();
+const fieldSpinAxis = new THREE.Vector3();
 const fieldOrientation = new THREE.Quaternion();
 
 renderLegend();
@@ -212,7 +202,10 @@ renderer.setAnimationLoop(() => {
   if (state.showElectrons || state.showCompasses) {
     flipGroup.getWorldQuaternion(fieldOrientation);
     fieldAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
-    fieldProbes.update(delta, fieldAxis, state.clt / 1000);
+    universalTiltGroup.getWorldQuaternion(fieldOrientation);
+    fieldSpinAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
+    fieldProbes.update(delta, fieldAxis, state.clt / 1000, fieldSpinAxis, radiansPerSecond);
+    updateElectronStateReadout();
   }
   updateViewerFieldReadout();
   controls.update();
@@ -369,11 +362,6 @@ function updateDustCloud(radius) {
   dust.points.material.size = Math.max(0.045, Math.min(0.16, radius * 0.006));
 }
 
-function updateAxisScale(radius) {
-  axisBeam.scale.set(1, Math.max(1.2, radius * FIELD_Y_SCALE * 0.92), 1);
-  axisBeam.position.y = 0;
-}
-
 function updateCameraForRadius(radius) {
   const focusRadius = Math.max(MIN_CAMERA_RADIUS, Math.min(radius, state.mBand * 1.85));
   const target = new THREE.Vector3(0, FIELD_CENTER_Y, 0);
@@ -404,6 +392,7 @@ function bindControls() {
     [elements.electronsToggle, "showElectrons"],
     [elements.compassesToggle, "showCompasses"],
     [elements.electronTrailsToggle, "electronTrails"],
+    [elements.fieldLinesToggle, "showFieldLines"],
   ]) {
     element.addEventListener("change", () => {
       state[key] = element.checked;
@@ -411,7 +400,7 @@ function bindControls() {
     });
   }
   for (const [element, key, min, max] of [
-    [elements.electronCountRange, "electronCount", 32, 320],
+    [elements.electronCountRange, "electronCount", 100, 2000],
     [elements.electronSpeedRange, "electronSpeed", 0.1, 3],
   ]) {
     element.addEventListener("input", () => {
@@ -490,6 +479,7 @@ function syncProbeControls() {
   elements.electronsToggle.checked = state.showElectrons;
   elements.compassesToggle.checked = state.showCompasses;
   elements.electronTrailsToggle.checked = state.electronTrails;
+  elements.fieldLinesToggle.checked = state.showFieldLines;
   elements.electronCountRange.value = state.electronCount;
   elements.electronSpeedRange.value = state.electronSpeed;
   elements.electronCountOutput.value = state.electronCount;
@@ -498,6 +488,19 @@ function syncProbeControls() {
     element.disabled = !state.showElectrons;
   }
   fieldProbes.setVisibility(state.showElectrons, state.showCompasses, state.electronTrails);
+  lineGroup.visible = state.showFieldLines;
+  shellGroup.visible = state.showFieldLines;
+  tracerGroup.visible = state.showFieldLines;
+  dust.points.visible = state.showFieldLines;
+  updateElectronStateReadout();
+}
+
+function updateElectronStateReadout() {
+  const counts = fieldProbes.counts;
+  const text = state.showElectrons
+    ? `${counts.free} free · ${counts.capturing} drawing in · ${counts.captured} captured · ${counts.released} released`
+    : "Electrons hidden";
+  if (elements.electronStateOutput.textContent !== text) elements.electronStateOutput.textContent = text;
 }
 
 function noop() {}
@@ -542,10 +545,8 @@ function updateField() {
     }
   });
 
-  createPolarPlumes(mPhysicalRadius);
   createTracers(fieldCurves);
   updateDustCloud(mhRadius);
-  updateAxisScale(mhRadius);
   updateCameraForRadius(mhRadius);
 
   updateAxialTilt();
@@ -641,82 +642,6 @@ function createDipoleLoop(radius, phi, color, opacity, tubeRadius) {
   return { group, curve };
 }
 
-function createPolarPlumes(mPhysicalRadius) {
-  const poleConfigs = [
-    { sign: 1, color: "#ff5a4f", offset: 0 },
-    { sign: -1, color: "#60a8ff", offset: Math.PI / 8 },
-  ];
-
-  for (const pole of poleConfigs) {
-    for (let i = 0; i < 12; i += 1) {
-      const phi = (i / 12) * Math.PI * 2 + pole.offset;
-      const plume = createPolarPlume(mPhysicalRadius, pole.sign, phi, new THREE.Color(pole.color));
-      plume.curve.userData = { color: pole.color, radius: mPhysicalRadius };
-      lineGroup.add(plume.group);
-      fieldLines.push(plume.group);
-      fieldCurves.push(plume.curve);
-    }
-  }
-}
-
-function createPolarPlume(radius, sign, phi, color) {
-  const points = [];
-  const radialDirection = new THREE.Vector3(Math.cos(phi), 0, Math.sin(phi));
-  const height = Math.max(2.8, radius * 2.25);
-  const spread = Math.max(0.28, radius * 0.18);
-
-  for (let i = 0; i <= 96; i += 1) {
-    const t = i / 96;
-    const climb = t ** 0.82;
-    const plumeSpread = t ** 1.12;
-    const outwardCurl = Math.sin((t * Math.PI) / 2) ** 2.2;
-    const flutter = Math.sin(t * Math.PI * 2.4 + phi * 1.7) * radius * 0.026 * t;
-    const lateral = spread * (0.5 * plumeSpread + 0.65 * outwardCurl) + flutter;
-    const y = sign * (POLE_DISTANCE + height * climb);
-    points.push(new THREE.Vector3(radialDirection.x * lateral, y, radialDirection.z * lateral));
-  }
-
-  const curve = new THREE.CatmullRomCurve3(points);
-  const group = new THREE.Group();
-  for (let segment = 0; segment < 8; segment += 1) {
-    const start = segment / 8;
-    const end = (segment + 1) / 8;
-    const segmentPoints = [];
-    for (let j = 0; j <= 14; j += 1) {
-      segmentPoints.push(curve.getPointAt(start + (end - start) * (j / 14)));
-    }
-    const segmentCurve = new THREE.CatmullRomCurve3(segmentPoints);
-    const fade = 1 - segment / 8;
-    const tubeRadius = Math.max(0.018, Math.min(0.08, radius * 0.012)) * (0.55 + fade * 0.72);
-    const material = new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: Math.min(1, 0.14 + fade * 0.96),
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    });
-    group.add(new THREE.Mesh(new THREE.TubeGeometry(segmentCurve, 28, tubeRadius, 8, false), material));
-  }
-
-  const arrowT = 0.58;
-  const arrowTubeRadius = Math.max(0.018, Math.min(0.075, radius * 0.011));
-  const arrow = new THREE.Mesh(
-    new THREE.ConeGeometry(arrowTubeRadius * 3.2, arrowTubeRadius * 9, 18),
-    new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: 0.88,
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    }),
-  );
-  arrow.position.copy(curve.getPointAt(arrowT));
-  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), curve.getTangentAt(arrowT).normalize());
-  group.add(arrow);
-
-  return { group, curve };
-}
-
 function createTracers(curves) {
   curves.forEach((curve, index) => {
     if (index % 3 !== 0) return;
@@ -765,13 +690,6 @@ function updateVfx(elapsed) {
   }
   dustPositions.needsUpdate = true;
 
-  const flashAge = elapsed - lastFlipAt;
-  if (flashAge < FLIP_FLASH_SECONDS) {
-    const progress = flashAge / FLIP_FLASH_SECONDS;
-    axisBeam.material.opacity = 0.34 + Math.sin(progress * Math.PI) * 0.42;
-  } else {
-    axisBeam.material.opacity = 0.34 + Math.sin(elapsed * 5.5) * 0.06;
-  }
   flipWave.material.opacity = 0;
   shellGroup.scale.setScalar(1);
   lineGroup.scale.setScalar(1);
@@ -822,7 +740,6 @@ function updateFlipRotation(elapsedSeconds) {
 
 function triggerPolarityFlip(elapsedSeconds) {
   polarityPositive = !polarityPositive;
-  lastFlipAt = elapsedSeconds;
   flipStartRotation = flipGroup.rotation.z;
   flipTargetRotation = flipStartRotation + Math.PI;
   flipStartedAt = elapsedSeconds;
@@ -908,7 +825,6 @@ function updateIntensityReadouts() {
   elements.microteslaReadout.textContent = `${formatNumber(microtesla, 3)} μT`;
   elements.tungstenReadout.textContent = `${formatNumber(tungsten, 4)} mg/m³`;
   dust.points.material.opacity = 0.12 + glow * 0.28;
-  axisBeam.material.opacity = 0.18 + glow * 0.22;
 }
 
 function tungstenConcentration(clt) {
