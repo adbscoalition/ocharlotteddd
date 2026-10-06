@@ -93,6 +93,18 @@
               </div>
             </div>
           </label>
+
+          <label class="control-row">
+            <span>Universal axial tilt</span>
+            <div class="range-pair">
+              <input id="universalTiltRange" type="range" min="-180" max="180" step="0.1" value="0" aria-label="Universal axial tilt" aria-describedby="universalTiltHint" />
+              <div class="unit-input compact">
+                <input id="universalTiltInput" type="text" inputmode="decimal" value="0" aria-label="Universal axial tilt in degrees" aria-describedby="universalTiltHint" />
+                <small>deg</small>
+              </div>
+            </div>
+            <small class="control-hint" id="universalTiltHint">Tilts the model and all field bands together.</small>
+          </label>
         </section>
 
         <section class="panel-section readout-grid" aria-label="Live readouts">

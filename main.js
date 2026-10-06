@@ -18,6 +18,7 @@ const DEFAULTS = {
   rpm: 120,
   flips: 0.3,
   tilt: 13,
+  universalTilt: 0,
 };
 
 const FIELD_CENTER_Y = 0.82;
@@ -45,6 +46,8 @@ const elements = {
   menuToggleButton: document.querySelector("#menuToggleButton"),
   tiltRange: document.querySelector("#tiltRange"),
   tiltInput: document.querySelector("#tiltInput"),
+  universalTiltRange: document.querySelector("#universalTiltRange"),
+  universalTiltInput: document.querySelector("#universalTiltInput"),
   resetButton: document.querySelector("#resetButton"),
   legend: document.querySelector("#legend"),
   polarityStatus: document.querySelector("#polarityStatus"),
@@ -91,19 +94,24 @@ controls.minDistance = 1.9;
 controls.maxDistance = 14;
 controls.target.set(0, FIELD_CENTER_Y, 0);
 
+// Tilt the model and field about their shared center, before local spin and flips.
+const universalTiltGroup = new THREE.Group();
+universalTiltGroup.position.y = FIELD_CENTER_Y;
+scene.add(universalTiltGroup);
+
 const fieldGroup = new THREE.Group();
 const flipGroup = new THREE.Group();
 const lineGroup = new THREE.Group();
 const shellGroup = new THREE.Group();
 const tracerGroup = new THREE.Group();
 const vfxGroup = new THREE.Group();
-fieldGroup.position.y = FIELD_CENTER_Y;
 fieldGroup.add(flipGroup);
 flipGroup.add(shellGroup, lineGroup, tracerGroup, vfxGroup);
-scene.add(fieldGroup);
+universalTiltGroup.add(fieldGroup);
 
 const modelGroup = createFemaleModel();
-scene.add(modelGroup);
+modelGroup.position.y = -FIELD_CENTER_Y;
+universalTiltGroup.add(modelGroup);
 
 const capNorth = new THREE.Mesh(
   new THREE.SphereGeometry(0.055, 24, 16),
@@ -369,6 +377,7 @@ function bindControls() {
   bindRangePair(elements.rpmRange, elements.rpmInput, "rpm", 0, 350, 1, noop);
   bindRangePair(elements.flipsRange, elements.flipsInput, "flips", 0, 10, 2, noop);
   bindRangePair(elements.tiltRange, elements.tiltInput, "tilt", -45, 45, 1, updateAxialTilt);
+  bindRangePair(elements.universalTiltRange, elements.universalTiltInput, "universalTilt", -180, 180, 1, updateAxialTilt);
   elements.flipNowButton.addEventListener("click", () => {
     triggerPolarityFlip(clock.elapsedTime);
   });
@@ -429,11 +438,14 @@ function syncInputs() {
   elements.flipsInput.value = formatInputNumber(state.flips, 2);
   elements.tiltRange.value = state.tilt;
   elements.tiltInput.value = formatInputNumber(state.tilt, 1);
+  elements.universalTiltRange.value = state.universalTilt;
+  elements.universalTiltInput.value = formatInputNumber(state.universalTilt, 1);
 }
 
 function noop() {}
 
 function updateAxialTilt() {
+  universalTiltGroup.rotation.z = THREE.MathUtils.degToRad(state.universalTilt);
   fieldGroup.rotation.z = THREE.MathUtils.degToRad(state.tilt);
 }
 

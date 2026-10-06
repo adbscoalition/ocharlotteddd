@@ -221,6 +221,12 @@ h2 {
   margin-top: 0;
 }
 
+.control-hint {
+  font-size: 0.74rem;
+  font-weight: 400;
+  line-height: 1.4;
+}
+
 .unit-input,
 .range-pair {
   min-width: 0;
