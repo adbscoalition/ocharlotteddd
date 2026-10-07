@@ -9,7 +9,12 @@ import {
 export const CHARGE_TO_MASS = -5;
 export const REENTRY_RADIUS_FACTOR = 2;
 export const REENTRY_SPEED_FACTOR = 2;
-const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5];
+const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5].map((band) => ({
+  band,
+  inverseWidth2: 1 / (0.11 + band * 0.12) ** 2,
+  inverseHeight2: 1 / (0.75 + band * 0.2) ** 2,
+  gain: 1.2 / Math.sqrt(1 + band),
+}));
 
 // Smooth finite current source and external dipole, shared with the rendered
 // flux lines. B and its first derivative are continuous at the source surface.
@@ -123,8 +128,16 @@ export function initializeFieldParticle(
     "acceleration",
     "flow",
     "trialVelocity",
+    "componentField",
+    "componentAcceleration",
+    "componentFlow",
   ])
     p[key] ||= [0, 0, 0];
+  p.sourceFields ||= [
+    [0, 0, 0],
+    [0, 0, 0],
+  ];
+  p.sourceStrengths ||= [0, 0];
   p.random = random;
   p.phase = "free";
   p.inbound = false;
@@ -223,18 +236,21 @@ export function sampleElectricMotion(
     axial = parallel / radius;
   let radialForce = 0,
     axialForce = 0;
-  for (const band of ATTRACTING_BANDS) {
-    const width = 0.11 + band * 0.12,
-      height = 0.75 + band * 0.2,
-      difference = q - band;
+  for (const {
+    band,
+    inverseWidth2,
+    inverseHeight2,
+    gain,
+  } of ATTRACTING_BANDS) {
+    const difference = q - band;
     const exponent =
-      (difference * difference) / (2 * width * width) +
-      (axial * axial) / (2 * height * height);
+      (difference * difference * inverseWidth2 +
+        axial * axial * inverseHeight2) /
+      2;
     if (exponent > 12) continue;
-    const well =
-      (1.2 * strength * radius * Math.exp(-exponent)) / Math.sqrt(1 + band);
-    radialForce -= (well * difference) / (width * width);
-    axialForce -= (well * axial) / (height * height);
+    const well = gain * strength * radius * Math.exp(-exponent);
+    radialForce -= well * difference * inverseWidth2;
+    axialForce -= well * axial * inverseHeight2;
   }
   const poleWidth = 0.18 + Math.min(0.12, radius * 0.01);
   for (let sign = -1; sign <= 1; sign += 2) {
@@ -289,6 +305,52 @@ function markReleased(p, reason) {
   p.lastOutcome = p.ejectionRoute === "pole" ? "eject_pole" : "eject_random";
 }
 
+function sampleParticleField(
+  p,
+  position,
+  center,
+  radius,
+  intensity,
+  environment,
+) {
+  if (environment) environment.sampleMagnetic(position, p.field, p);
+  else
+    sampleMagneticField(position, center, p.moment, radius, intensity, p.field);
+}
+function sampleParticleElectric(
+  p,
+  position,
+  center,
+  radius,
+  intensity,
+  angularSpeed,
+  spinAxis,
+  environment,
+) {
+  if (environment)
+    environment.sampleElectric(
+      position,
+      p.field,
+      p.attraction ?? 1,
+      p.acceleration,
+      p.flow,
+      p,
+    );
+  else
+    sampleElectricMotion(
+      position,
+      center,
+      radius,
+      intensity,
+      angularSpeed,
+      spinAxis,
+      p.acceleration,
+      p.flow,
+      p.attraction ?? 1,
+      p.moment,
+    );
+}
+
 export function advanceFieldParticle(
   p,
   center,
@@ -298,23 +360,44 @@ export function advanceFieldParticle(
   angularSpeed,
   dt,
   spinAxis = [0, 1, 0],
+  environment = null,
 ) {
   p.lastOutcome = null;
+  if (environment) {
+    const index = environment.dominant(p.position, p.sourceIndex ?? -1);
+    if (p.sourceIndex !== undefined && index !== p.sourceIndex) {
+      p.transfers = (p.transfers || 0) + 1;
+      p.parallelSign = 0;
+      p.lastBand = null;
+    }
+    p.sourceIndex = index;
+    const source = environment.sources[index];
+    center = source.center;
+    radius = source.radius;
+    intensity = source.intensity;
+    orientation = source.orientation;
+  }
   transformFieldVector([0, 1, 0], orientation, p.moment);
   const initialDistance = Math.hypot(
     p.position[0] - center[0],
     p.position[1] - center[1],
     p.position[2] - center[2],
   );
-  if (p.inbound && initialDistance <= radius * MH_MULTIPLIER) p.inbound = false;
-  if (intensity === 0) {
+  if (
+    p.inbound &&
+    (environment
+      ? environment.contains(p.position)
+      : initialDistance <= radius * MH_MULTIPLIER)
+  )
+    p.inbound = false;
+  if (environment ? !environment.isActive() : intensity === 0) {
     if (p.phase === "captured" || p.phase === "capturing")
       markReleased(p, "weak_field");
-    else if (p.phase !== "released") p.phase = "free";
+    else if (environment || p.phase !== "released") p.phase = "free";
     advanceElectron(p.position, p.velocity, [0, 0, 0], dt);
     return;
   }
-  sampleMagneticField(p.position, center, p.moment, radius, intensity, p.field);
+  sampleParticleField(p, p.position, center, radius, intensity, environment);
   const speed = Math.hypot(...p.velocity),
     fieldStrength = Math.hypot(...p.field);
   // Exact local gyromotion handles rapid central cycles. Substeps still resolve
@@ -334,25 +417,16 @@ export function advanceFieldParticle(
   const h = dt / p.substeps,
     coupling = p.electricCoupling ?? 1;
   for (let i = 0; i < p.substeps; i++) {
-    sampleMagneticField(
-      p.position,
-      center,
-      p.moment,
-      radius,
-      intensity,
-      p.field,
-    );
-    sampleElectricMotion(
+    sampleParticleField(p, p.position, center, radius, intensity, environment);
+    sampleParticleElectric(
+      p,
       p.position,
       center,
       radius,
       intensity,
       angularSpeed,
       spinAxis,
-      p.acceleration,
-      p.flow,
-      p.attraction ?? 1,
-      p.moment,
+      environment,
     );
     if (coupling !== 1)
       for (let j = 0; j < 3; j++) {
@@ -371,25 +445,16 @@ export function advanceFieldParticle(
       p.acceleration,
       p.flow,
     );
-    sampleMagneticField(
-      p.scratch,
-      center,
-      p.moment,
-      radius,
-      intensity,
-      p.field,
-    );
-    sampleElectricMotion(
+    sampleParticleField(p, p.scratch, center, radius, intensity, environment);
+    sampleParticleElectric(
+      p,
       p.scratch,
       center,
       radius,
       intensity,
       angularSpeed,
       spinAxis,
-      p.acceleration,
-      p.flow,
-      p.attraction ?? 1,
-      p.moment,
+      environment,
     );
     if (coupling !== 1)
       for (let j = 0; j < 3; j++) {
@@ -399,7 +464,7 @@ export function advanceFieldParticle(
     advanceElectron(p.position, p.velocity, p.field, h, p.acceleration, p.flow);
   }
   if (!p.inbound && p.scattering !== false) scatterVelocity(p, dt, intensity);
-  sampleMagneticField(p.position, center, p.moment, radius, intensity, p.field);
+  sampleParticleField(p, p.position, center, radius, intensity, environment);
   const strength = Math.hypot(...p.field) || 1e-30,
     totalSpeed = Math.hypot(...p.velocity) || 1e-30;
   const parallel =
@@ -421,9 +486,14 @@ export function advanceFieldParticle(
   const magnetization =
     Math.sqrt(perpendicular2) /
     (5 * strength * Math.max(SOURCE_RADIUS, distance / 3));
-  if (!p.inbound && distance > radius * MH_MULTIPLIER)
+  if (
+    !p.inbound &&
+    (environment
+      ? !environment.contains(p.position)
+      : distance > radius * MH_MULTIPLIER)
+  )
     markReleased(p, "escape");
-  else if (p.phase !== "released")
+  else if (environment || p.phase !== "released")
     p.phase = p.inbound
       ? "free"
       : magnetization < 0.35

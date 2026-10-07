@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "./OrbitControls.js";
+import { InteractionLines } from "./interaction-lines.js";
 import { FieldProbes } from "./field-probes.js";
 import {
   sampleFieldLine,
@@ -90,6 +91,20 @@ const DEFAULTS = {
   electronTrails: false,
   showCompasses: false,
   showFieldLines: true,
+  secondaryEnabled: false,
+  secondaryCLT: 650,
+  secondaryX: 4,
+  secondaryY: 0,
+  secondaryZ: 0,
+  secondaryRPM: 90,
+  secondaryTilt: -13,
+  secondaryReverse: false,
+  stirring: 1,
+  paused: false,
+  capturedOnly: false,
+  stablePaths: false,
+  electronColorMode: "status",
+  electronColor: "#ffd34d",
 };
 
 const HUMAN_HEIGHT = 1.68;
@@ -102,6 +117,33 @@ const FIELD_Y_SCALE = 1;
 const DUST_COUNT = 420;
 
 const elements = {
+  ...Object.fromEntries(
+    [
+      "secondaryToggle",
+      "secondaryControls",
+      "secondaryCLTInput",
+      "secondaryMOutput",
+      "secondaryDistanceInput",
+      "secondaryXInput",
+      "secondaryYInput",
+      "secondaryZInput",
+      "secondaryRPMInput",
+      "secondaryTiltInput",
+      "secondaryReverseToggle",
+      "stirringRange",
+      "stirringOutput",
+      "secondaryCaptureOutput",
+      "pauseButton",
+      "stepButton",
+      "capturedOnlyToggle",
+      "stablePathsToggle",
+      "refreshPathsButton",
+      "electronColorMode",
+      "electronColorInput",
+      "singleColorRow",
+      "electronColorHint",
+    ].map((id) => [id, document.getElementById(id)]),
+  ),
   appShell: document.querySelector("#appShell"),
   canvas: document.querySelector("#scene"),
   simStage: document.querySelector(".sim-stage"),
@@ -147,6 +189,7 @@ const elements = {
 };
 
 let state = { ...DEFAULTS };
+let simulationTime = 0;
 let fieldLines = [];
 let fieldShells = [];
 let tracers = [];
@@ -199,6 +242,20 @@ jitterGroup.add(fieldGroup);
 
 const modelGroup = createFemaleModel();
 scene.add(modelGroup);
+const secondaryModelGroup = createFemaleModel();
+secondaryModelGroup.traverse((child) => {
+  if (child.material?.color?.getHex() === 0x356357)
+    child.material.color.set(0x77549a);
+});
+scene.add(secondaryModelGroup);
+const secondaryUniversalGroup = new THREE.Group();
+const secondaryJitterGroup = new THREE.Group();
+const secondaryFieldGroup = new THREE.Group();
+const secondaryFlipGroup = new THREE.Group();
+scene.add(secondaryUniversalGroup);
+secondaryUniversalGroup.add(secondaryJitterGroup);
+secondaryJitterGroup.add(secondaryFieldGroup);
+secondaryFieldGroup.add(secondaryFlipGroup);
 
 const capNorth = new THREE.Mesh(
   new THREE.SphereGeometry(0.055, 24, 16),
@@ -217,6 +274,11 @@ const capSouth = new THREE.Mesh(
   }),
 );
 flipGroup.add(capNorth, capSouth);
+const secondaryCapNorth = capNorth.clone();
+const secondaryCapSouth = capSouth.clone();
+secondaryCapNorth.position.y = POLE_DISTANCE;
+secondaryCapSouth.position.y = -POLE_DISTANCE;
+secondaryFlipGroup.add(secondaryCapNorth, secondaryCapSouth);
 
 const dust = createDustCloud();
 flipGroup.add(dust.points);
@@ -263,10 +325,24 @@ const fieldAxis = new THREE.Vector3();
 const fieldSpinAxis = new THREE.Vector3();
 const fieldOrientation = new THREE.Quaternion();
 const spinOrientation = new THREE.Quaternion();
+const secondaryOrientation = new THREE.Quaternion();
+const secondarySpinOrientation = new THREE.Quaternion();
+const secondaryCenter = FIELD_CENTER.clone();
+const sources = [0, 1].map(() => ({
+  center: [0, 0, 0],
+  radius: 1,
+  intensity: 0,
+  orientation: [0, 0, 0, 1],
+  moment: [0, 1, 0],
+  spinAxis: [0, 1, 0],
+  angularSpeed: 0,
+}));
+const interactionLines = new InteractionLines(scene);
 
 renderLegend();
 bindControls();
 syncInputs();
+updateSecondary(false);
 updateField();
 resize();
 window.addEventListener("resize", resize);
@@ -274,20 +350,24 @@ window.addEventListener("resize", resize);
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const delta = Math.min(clock.getDelta(), 0.05);
-  const elapsed = clock.elapsedTime;
-  const radiansPerSecond =
-    ((state.rpm * Math.PI * 2) / 60) * VISUAL_ROTATION_GAIN;
-  fieldGroup.rotation.y += radiansPerSecond * delta;
-  updateFieldJitter(elapsed);
+  advanceSimulation(state.paused ? 0 : delta);
+  updateViewerFieldReadout();
+  controls.update();
+  renderer.render(scene, camera);
+});
 
-  updateFlipRotation(elapsed);
-  updatePolarity(elapsed);
-  updateVfx(elapsed);
+function advanceSimulation(delta) {
+  simulationTime += delta;
+  const radiansPerSecond = (state.rpm * Math.PI * 2) / 60;
+  fieldGroup.rotation.y += radiansPerSecond * delta;
+  secondaryFieldGroup.rotation.y +=
+    ((state.secondaryRPM * Math.PI * 2) / 60) * delta;
+  updateFieldJitter(simulationTime);
+  updateFlipRotation(simulationTime);
+  updatePolarity(simulationTime);
+  if (delta > 0) updateVfx(simulationTime);
+  updateSourceMetadata();
   if (state.showElectrons || state.showCompasses) {
-    flipGroup.getWorldQuaternion(fieldOrientation);
-    fieldAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
-    jitterGroup.getWorldQuaternion(spinOrientation);
-    fieldSpinAxis.set(0, 1, 0).applyQuaternion(spinOrientation);
     fieldProbes.update(
       delta,
       fieldAxis,
@@ -298,10 +378,89 @@ renderer.setAnimationLoop(() => {
     );
     updateElectronStateReadout();
   }
-  updateViewerFieldReadout();
-  controls.update();
-  renderer.render(scene, camera);
-});
+  if (state.secondaryEnabled) interactionLines.update(simulationTime, sources);
+}
+
+function updateSourceMetadata() {
+  flipGroup.getWorldQuaternion(fieldOrientation);
+  fieldAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
+  jitterGroup.getWorldQuaternion(spinOrientation);
+  fieldSpinAxis.set(0, 1, 0).applyQuaternion(spinOrientation);
+  const primary = sources[0];
+  FIELD_CENTER.toArray(primary.center);
+  primary.radius = state.mBand;
+  primary.intensity = state.clt / 1000;
+  fieldOrientation.toArray(primary.orientation);
+  fieldAxis.toArray(primary.moment);
+  fieldSpinAxis.toArray(primary.spinAxis);
+  primary.angularSpeed = (state.rpm * Math.PI * 2) / 60;
+  secondaryFlipGroup.getWorldQuaternion(secondaryOrientation);
+  secondaryJitterGroup.getWorldQuaternion(secondarySpinOrientation);
+  const secondary = sources[1];
+  secondaryCenter.toArray(secondary.center);
+  secondary.radius = calculateMBand(state.secondaryCLT);
+  secondary.intensity = state.secondaryCLT / 1000;
+  secondaryOrientation.toArray(secondary.orientation);
+  new THREE.Vector3(0, 1, 0)
+    .applyQuaternion(secondaryOrientation)
+    .toArray(secondary.moment);
+  new THREE.Vector3(0, 1, 0)
+    .applyQuaternion(secondarySpinOrientation)
+    .toArray(secondary.spinAxis);
+  secondary.angularSpeed = (state.secondaryRPM * Math.PI * 2) / 60;
+}
+
+function updateSecondary(fitCamera = true) {
+  secondaryModelGroup.position.set(
+    state.secondaryX,
+    state.secondaryY,
+    state.secondaryZ,
+  );
+  secondaryCenter.copy(FIELD_CENTER).add(secondaryModelGroup.position);
+  secondaryUniversalGroup.position.copy(secondaryCenter);
+  secondaryUniversalGroup.rotation.z = THREE.MathUtils.degToRad(
+    state.universalTilt,
+  );
+  secondaryFieldGroup.rotation.z = THREE.MathUtils.degToRad(
+    state.secondaryTilt,
+  );
+  secondaryFlipGroup.rotation.z = state.secondaryReverse ? Math.PI : 0;
+  secondaryModelGroup.visible = secondaryUniversalGroup.visible =
+    state.secondaryEnabled;
+  elements.secondaryControls.hidden = !state.secondaryEnabled;
+  elements.secondaryMOutput.value = formatInputNumber(
+    calculateMBand(state.secondaryCLT),
+    2,
+  );
+  if (document.activeElement !== elements.secondaryDistanceInput)
+    elements.secondaryDistanceInput.value = formatInputNumber(
+      Math.hypot(state.secondaryX, state.secondaryY, state.secondaryZ),
+      2,
+    );
+  updateSourceMetadata();
+  fieldProbes.setSources(
+    state.secondaryEnabled ? sources : null,
+    state.stirring,
+  );
+  interactionLines.group.visible =
+    state.secondaryEnabled && state.showFieldLines;
+  interactionLines.update(simulationTime, sources, true);
+  syncProbeControls();
+  if (fitCamera) updateCameraForRadius(currentDisplayRadius);
+}
+
+function syncTimeControls() {
+  elements.pauseButton.textContent = state.paused ? "▶" : "Ⅱ";
+  elements.pauseButton.setAttribute(
+    "aria-label",
+    state.paused ? "Resume simulation" : "Pause simulation",
+  );
+  elements.pauseButton.title = state.paused
+    ? "Resume simulation"
+    : "Pause simulation";
+  elements.pauseButton.setAttribute("aria-pressed", String(state.paused));
+  elements.stepButton.disabled = !state.paused;
+}
 
 function createFemaleModel() {
   const group = new THREE.Group();
@@ -581,11 +740,22 @@ function updateDustCloud(radius) {
 }
 
 function updateCameraForRadius(radius) {
+  const separation = state.secondaryEnabled
+    ? Math.hypot(state.secondaryX, state.secondaryY, state.secondaryZ)
+    : 0;
+  const secondaryRadius = state.secondaryEnabled
+    ? calculateMBand(state.secondaryCLT)
+    : 0;
   const focusRadius = Math.max(
     MIN_CAMERA_RADIUS,
     Math.min(radius, state.mBand * 1.85),
+    secondaryRadius * 1.85,
+    separation * 0.65 + 2,
   );
-  const target = FIELD_CENTER.clone();
+  radius = Math.max(radius, secondaryRadius * 6.5 + separation);
+  const target = state.secondaryEnabled
+    ? FIELD_CENTER.clone().lerp(secondaryCenter, 0.5)
+    : FIELD_CENTER.clone();
   const direction = camera.position.clone().sub(target).normalize();
   const distance = focusRadius * 1.72;
 
@@ -603,6 +773,64 @@ function updateCameraForRadius(radius) {
 }
 
 function bindControls() {
+  elements.pauseButton.addEventListener("click", () => {
+    state.paused = !state.paused;
+    syncTimeControls();
+  });
+  elements.stepButton.addEventListener("click", () => {
+    if (state.paused) advanceSimulation(1 / 60);
+  });
+  elements.secondaryToggle.addEventListener("change", () => {
+    state.secondaryEnabled = elements.secondaryToggle.checked;
+    updateSecondary();
+  });
+  for (const [id, key, min, max] of [
+    ["secondaryCLTInput", "secondaryCLT", 0, 50000],
+    ["secondaryXInput", "secondaryX", -100, 100],
+    ["secondaryYInput", "secondaryY", -20, 20],
+    ["secondaryZInput", "secondaryZ", -100, 100],
+    ["secondaryRPMInput", "secondaryRPM", 0, 350],
+    ["secondaryTiltInput", "secondaryTilt", -180, 180],
+  ])
+    bindDecimalInput(elements[id], key, min, max, 2, updateSecondary);
+  elements.secondaryDistanceInput.addEventListener("input", () => {
+    const value = parseLooseNumber(elements.secondaryDistanceInput.value);
+    if (value === null) return;
+    const distance = clampNumber(value, 0, 150, 4);
+    const current = Math.hypot(
+      state.secondaryX,
+      state.secondaryY,
+      state.secondaryZ,
+    );
+    if (current < 1e-9) state.secondaryX = distance;
+    else
+      for (const key of ["secondaryX", "secondaryY", "secondaryZ"])
+        state[key] *= distance / current;
+    for (const key of ["secondaryX", "secondaryY", "secondaryZ"])
+      elements[key + "Input"].value = formatInputNumber(state[key], 2);
+    updateSecondary();
+  });
+  elements.secondaryReverseToggle.addEventListener("change", () => {
+    state.secondaryReverse = elements.secondaryReverseToggle.checked;
+    updateSecondary(false);
+  });
+  elements.stirringRange.addEventListener("input", () => {
+    state.stirring = Number(elements.stirringRange.value);
+    elements.stirringOutput.value = `${formatInputNumber(state.stirring, 1)}×`;
+    if (fieldProbes.environment)
+      fieldProbes.environment.stirring = state.stirring;
+  });
+  elements.refreshPathsButton.addEventListener("click", () =>
+    fieldProbes.freezePaths(),
+  );
+  elements.electronColorMode.addEventListener("change", () => {
+    state.electronColorMode = elements.electronColorMode.value;
+    syncProbeControls();
+  });
+  elements.electronColorInput.addEventListener("input", () => {
+    state.electronColor = elements.electronColorInput.value;
+    syncProbeControls();
+  });
   bindDecimalInput(elements.cltInput, "clt", 0, 50000, 2, updateAutomaticMBand);
   bindRangePair(elements.rpmRange, elements.rpmInput, "rpm", 0, 350, 1, noop);
   bindRangePair(
@@ -639,13 +867,15 @@ function bindControls() {
     0,
     15,
     1,
-    () => updateFieldJitter(clock.elapsedTime),
+    () => updateFieldJitter(simulationTime),
   );
   for (const [element, key] of [
     [elements.electronsToggle, "showElectrons"],
     [elements.compassesToggle, "showCompasses"],
     [elements.electronTrailsToggle, "electronTrails"],
     [elements.fieldLinesToggle, "showFieldLines"],
+    [elements.capturedOnlyToggle, "capturedOnly"],
+    [elements.stablePathsToggle, "stablePaths"],
   ]) {
     element.addEventListener("change", () => {
       state[key] = element.checked;
@@ -680,7 +910,7 @@ function bindControls() {
     syncProbeControls();
   });
   elements.flipNowButton.addEventListener("click", () => {
-    triggerPolarityFlip(clock.elapsedTime);
+    triggerPolarityFlip(simulationTime);
   });
   elements.menuToggleButton.addEventListener("click", toggleMenu);
   elements.fullscreenButton.addEventListener("click", toggleFullscreen);
@@ -693,7 +923,16 @@ function bindControls() {
 
   elements.resetButton.addEventListener("click", () => {
     state = { ...DEFAULTS };
+    simulationTime = 0;
+    flipStartedAt = -999;
+    flipTargetRotation = flipStartRotation = lastFlipBucket = 0;
+    polarityPositive = true;
+    fieldGroup.rotation.y =
+      secondaryFieldGroup.rotation.y =
+      flipGroup.rotation.z =
+        0;
     syncInputs("all");
+    updateSecondary(false);
     updateField();
   });
 }
@@ -733,6 +972,20 @@ function bindDecimalInput(input, key, min, max, decimals, onChange) {
 }
 
 function syncInputs() {
+  elements.secondaryToggle.checked = state.secondaryEnabled;
+  for (const key of [
+    "secondaryCLT",
+    "secondaryX",
+    "secondaryY",
+    "secondaryZ",
+    "secondaryRPM",
+    "secondaryTilt",
+  ])
+    elements[key + "Input"].value = formatInputNumber(state[key], 2);
+  elements.secondaryReverseToggle.checked = state.secondaryReverse;
+  elements.stirringRange.value = state.stirring;
+  elements.stirringOutput.value = `${formatInputNumber(state.stirring, 1)}×`;
+  syncTimeControls();
   elements.cltInput.value = formatInputNumber(state.clt, 2);
   elements.mBandInput.value = formatInputNumber(state.mBand, 2);
   elements.rpmRange.value = state.rpm;
@@ -750,6 +1003,28 @@ function syncInputs() {
 }
 
 function syncProbeControls() {
+  elements.capturedOnlyToggle.checked = state.capturedOnly;
+  elements.stablePathsToggle.checked = state.stablePaths;
+  elements.electronColorMode.value = state.electronColorMode;
+  elements.electronColorInput.value = state.electronColor;
+  elements.singleColorRow.hidden = state.electronColorMode !== "single";
+  elements.electronColorHint.textContent = {
+    status:
+      "Cyan: free · Green: interacting · Gold: magnetized · White: escaping",
+    single: "All live electrons use your chosen color.",
+    distance:
+      "Warm near the source heart → violet at and beyond MH. Uses the dominant field’s radius.",
+    speed:
+      "Blue: slower → red: faster. Scale follows the dominant field’s radius and launch speed.",
+  }[state.electronColorMode];
+  fieldProbes.setStablePaths(state.stablePaths);
+  fieldProbes.setDisplay(
+    state.capturedOnly,
+    state.electronColorMode,
+    state.electronColor,
+  );
+  elements.refreshPathsButton.disabled =
+    !state.showElectrons || !state.stablePaths;
   elements.electronsToggle.checked = state.showElectrons;
   elements.compassesToggle.checked = state.showCompasses;
   elements.electronTrailsToggle.checked = state.electronTrails;
@@ -767,6 +1042,10 @@ function syncProbeControls() {
     elements.electronAttractionRange,
     elements.electronTrailsToggle,
     elements.respawnElectronsButton,
+    elements.capturedOnlyToggle,
+    elements.stablePathsToggle,
+    elements.electronColorMode,
+    elements.electronColorInput,
   ]) {
     element.disabled = !state.showElectrons;
   }
@@ -775,9 +1054,13 @@ function syncProbeControls() {
     state.showCompasses,
     state.electronTrails,
   );
-  lineGroup.visible = state.showFieldLines;
-  shellGroup.visible = state.showFieldLines;
-  tracerGroup.visible = state.showFieldLines;
+  lineGroup.visible = state.showFieldLines && !state.secondaryEnabled;
+  shellGroup.visible = lineGroup.visible;
+  tracerGroup.visible = lineGroup.visible;
+  interactionLines.group.visible =
+    state.showFieldLines && state.secondaryEnabled;
+  if (interactionLines.group.visible)
+    interactionLines.update(simulationTime, sources, true);
   dust.points.visible = false;
   const seeThroughFloor = state.showElectrons || state.showFieldLines;
   floor.material.transparent = seeThroughFloor;
@@ -789,6 +1072,10 @@ function syncProbeControls() {
 
 function updateElectronStateReadout() {
   const counts = fieldProbes.counts;
+  if (state.secondaryEnabled) {
+    const captured = fieldProbes.captureCounts;
+    elements.secondaryCaptureOutput.textContent = `Captured: Charlotte 1 ${captured[0]} · Charlotte 2 ${captured[1]}. Counts follow actual local forces.`;
+  }
   const text = state.showElectrons
     ? `${counts.free} free (${fieldProbes.inboundCount} inbound) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes`
     : "Electrons hidden";
@@ -819,6 +1106,9 @@ function noop() {}
 function updateAxialTilt() {
   universalTiltGroup.rotation.z = THREE.MathUtils.degToRad(state.universalTilt);
   fieldGroup.rotation.z = THREE.MathUtils.degToRad(state.tilt);
+  secondaryUniversalGroup.rotation.z = THREE.MathUtils.degToRad(
+    state.universalTilt,
+  );
 }
 
 function updateFieldJitter(time) {
@@ -831,6 +1121,7 @@ function updateFieldJitter(time) {
     amplitude *
       (0.65 * Math.sin(time * 6.7 + 0.7) + 0.35 * Math.sin(time * 13.1 - 0.7)),
   );
+  secondaryJitterGroup.rotation.copy(jitterGroup.rotation);
 }
 
 function calculateMBand(clt) {
@@ -901,7 +1192,13 @@ function updateField() {
   updateViewerFieldReadout();
   flipGroup.getWorldQuaternion(fieldOrientation);
   fieldProbes.setOrientation(fieldOrientation);
+  updateSourceMetadata();
+  fieldProbes.setSources(
+    state.secondaryEnabled ? sources : null,
+    state.stirring,
+  );
   fieldProbes.configure(state.mBand, state.electronCount, state.electronSpeed);
+  syncProbeControls();
   updateElectronStateReadout();
 }
 

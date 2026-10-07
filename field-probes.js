@@ -11,6 +11,8 @@ import {
   MH_MULTIPLIER,
 } from "./field-lines.mjs";
 
+import { FieldSystem, sourceDistance } from "./field-system.mjs";
+
 const STEP = 1 / 120;
 const TRAIL_LENGTH = 40;
 const TRAIL_SAMPLE_TIME = 1 / 60;
@@ -24,6 +26,18 @@ const PARTICLE_COLORS = {
 
 export class FieldProbes {
   constructor(scene, center) {
+    this.environment = null;
+    this.capturedOnly = false;
+    this.colorMode = "status";
+    this.singleColor = new THREE.Color("#ffd34d");
+    this.renderColor = new THREE.Color();
+    this.sampleColor = [0, 0, 0];
+    this.captureCounts = [0, 0];
+    this.frozenEnabled = false;
+    this.secondaryPrevious = new THREE.Quaternion();
+    this.secondaryTarget = new THREE.Quaternion();
+    this.secondaryStep = new THREE.Quaternion();
+    this.secondaryOrientation = [0, 0, 0, 1];
     this.center = center;
     this.radius = 4;
     this.speed = 1;
@@ -90,9 +104,30 @@ export class FieldProbes {
         blending: THREE.NormalBlending,
       }),
     );
+    this.points.material.onBeforeCompile = (shader) => {
+      shader.vertexShader =
+        "attribute float particleVisible;\nvarying float vParticleVisible;\n" +
+        shader.vertexShader;
+      shader.vertexShader = shader.vertexShader.replace(
+        "void main() {",
+        "void main() {\nvParticleVisible = particleVisible;",
+      );
+      shader.fragmentShader =
+        "varying float vParticleVisible;\n" + shader.fragmentShader;
+      shader.fragmentShader = shader.fragmentShader.replace(
+        "#include <alphatest_fragment>",
+        "#include <alphatest_fragment>\nif (vParticleVisible < 0.5) discard;",
+      );
+    };
+    this.points.material.customProgramCacheKey = () => "particle-visibility-v1";
+    this.stablePaths = new THREE.LineSegments(
+      new THREE.BufferGeometry(),
+      this.trails.material.clone(),
+    );
+    this.stablePaths.frustumCulled = false;
     // Particles can travel outside their initial bounds before being released again.
     this.points.frustumCulled = this.trails.frustumCulled = false;
-    this.electronGroup.add(this.trails, this.points);
+    this.electronGroup.add(this.trails, this.stablePaths, this.points);
     this.compasses = this.createCompasses();
     this.setVisibility(false, false, false);
   }
@@ -145,6 +180,13 @@ export class FieldProbes {
     this.trails.geometry = new THREE.BufferGeometry();
     this.positions = new Float32Array(count * 3);
     this.colors = new Float32Array(count * 3);
+    this.visibility = new Float32Array(count).fill(1);
+    this.points.geometry.setAttribute(
+      "particleVisible",
+      new THREE.BufferAttribute(this.visibility, 1).setUsage(
+        THREE.DynamicDrawUsage,
+      ),
+    );
     this.trailPositions = new Float32Array(count * (TRAIL_LENGTH - 1) * 6);
     const colors = new Float32Array(this.trailPositions.length);
     this.trailColors = colors;
@@ -170,7 +212,8 @@ export class FieldProbes {
       "color",
       new THREE.BufferAttribute(colors, 3),
     );
-    this.particles = Array.from({ length: count }, () => ({
+    this.particles = Array.from({ length: count }, (_, populationIndex) => ({
+      populationIndex,
       position: [0, 0, 0],
       velocity: [0, 0, 0],
       history: new Float32Array(TRAIL_LENGTH * 3),
@@ -180,31 +223,48 @@ export class FieldProbes {
       trailTime: 0,
     }));
     this.respawn();
+    this.layoutCompasses();
+  }
+
+  layoutCompasses() {
+    const sources = this.environment?.sources;
+    const center = sources
+      ? this.center.map((v, i) => (v + sources[1].center[i]) / 2)
+      : this.center;
+    const separation = sources ? sourceDistance(this.center, sources[1]) : 0;
+    const radius = Math.max(
+      this.radius,
+      sources?.[1].radius ?? 0,
+      separation * 0.55,
+    );
     for (const compass of this.compasses) {
       compass.anchor.position.set(
-        this.center[0] + compass.offset[0] * radius * 1.1,
-        this.center[1] + compass.offset[1] * radius,
-        this.center[2] + compass.offset[2] * radius * 1.1,
+        center[0] + compass.offset[0] * radius * 1.1,
+        center[1] + compass.offset[1] * radius,
+        center[2] + compass.offset[2] * radius * 1.1,
       );
-      compass.anchor.scale.setScalar(radius * 0.32);
+      compass.anchor.scale.setScalar(
+        Math.min(radius, Math.max(this.radius, sources?.[1].radius ?? 0)) *
+          0.32,
+      );
     }
   }
 
   releaseParticle(particle, replacement = false) {
-    initializeFieldParticle(
-      particle,
-      this.center,
-      this.radius,
-      this.orientation,
-      this.speed,
-    );
+    const index = this.environment
+      ? replacement
+        ? Math.min(particle.sourceIndex ?? 0, 1)
+        : particle.populationIndex % 2
+      : 0;
+    const source = this.environment?.sources[index];
+    particle.sourceIndex = index;
+    particle.transfers = 0;
+    const center = source?.center ?? this.center;
+    const radius = source?.radius ?? this.radius;
+    const orientation = source?.orientation ?? this.orientation;
+    initializeFieldParticle(particle, center, radius, orientation, this.speed);
     if (replacement) {
-      placeIncomingReplacement(
-        particle,
-        this.center,
-        this.radius,
-        this.orientation,
-      );
+      placeIncomingReplacement(particle, center, radius, orientation);
       this.replacements += 1;
     }
     particle.age = 0;
@@ -212,7 +272,7 @@ export class FieldProbes {
     particle.trailTime = 0;
     for (let j = 0; j < TRAIL_LENGTH; j += 1) {
       particle.history.set(particle.position, j * 3);
-      particle.historyColors.set(PARTICLE_COLORS[particle.phase], j * 3);
+      particle.historyColors.set(this.colorForParticle(particle), j * 3);
     }
   }
 
@@ -233,8 +293,94 @@ export class FieldProbes {
   setVisibility(electrons, compasses, trails) {
     this.electronGroup.visible = electrons;
     this.compassGroup.visible = compasses;
-    this.trails.visible = trails;
+    this.trails.visible = trails && !this.frozenEnabled;
+    this.stablePaths.visible = electrons && this.frozenEnabled;
     if (!electrons) this.accumulator = 0;
+  }
+
+  setSources(sources, stirring = 1) {
+    if (!sources) this.environment = null;
+    else {
+      if (!this.environment) {
+        this.environment = new FieldSystem(sources, stirring);
+        this.secondaryPrevious.fromArray(sources[1].orientation);
+      }
+      this.environment.sources = sources;
+      this.environment.stirring = stirring;
+      this.environment.prepareOrientations();
+    }
+    this.layoutCompasses();
+  }
+
+  colorForParticle(particle, out = this.sampleColor) {
+    if (this.colorMode === "status") {
+      const c = PARTICLE_COLORS[particle.phase];
+      out[0] = c[0];
+      out[1] = c[1];
+      out[2] = c[2];
+      return out;
+    }
+    if (this.colorMode === "single") return this.singleColor.toArray(out);
+    const source = this.environment?.sources[particle.sourceIndex ?? 0];
+    const radius = source?.radius ?? this.radius;
+    let hue;
+    if (this.colorMode === "speed")
+      hue =
+        0.66 *
+        (1 -
+          Math.min(
+            1,
+            Math.hypot(...particle.velocity) / (radius * 3.8 * this.speed),
+          ));
+    else {
+      const distance = source
+        ? sourceDistance(particle.position, source)
+        : Math.hypot(...particle.position.map((v, i) => v - this.center[i]));
+      hue = Math.min(0.72, (distance / (radius * MH_MULTIPLIER)) * 0.72);
+    }
+    return this.renderColor.setHSL(hue, 0.86, 0.58).toArray(out);
+  }
+
+  setDisplay(capturedOnly, mode, color) {
+    this.capturedOnly = capturedOnly;
+    this.colorMode = mode;
+    this.singleColor.set(color);
+    this.writeGeometry();
+    this.filterStablePaths();
+  }
+
+  setStablePaths(enabled) {
+    if (enabled && !this.frozenEnabled) this.freezePaths();
+    this.frozenEnabled = enabled;
+    this.stablePaths.visible = this.electronGroup.visible && enabled;
+  }
+
+  freezePaths() {
+    const visible = this.trails.visible,
+      filtered = this.capturedOnly;
+    this.trails.visible = true;
+    this.capturedOnly = false;
+    this.writeGeometry();
+    this.stablePaths.geometry.dispose();
+    this.stablePaths.geometry = this.trails.geometry.clone();
+    this.frozenColors = this.trailColors.slice();
+    this.frozenCaptured = this.particles.map((p) => p.phase === "captured");
+    this.trails.visible = visible;
+    this.capturedOnly = filtered;
+    this.writeGeometry();
+    this.filterStablePaths();
+  }
+
+  filterStablePaths() {
+    if (!this.frozenColors) return;
+    const color = this.stablePaths.geometry.attributes.color;
+    const stride = (TRAIL_LENGTH - 1) * 6;
+    for (let i = 0; i < color.array.length; i++)
+      color.array[i] =
+        this.capturedOnly && !this.frozenCaptured[Math.floor(i / stride)]
+          ? 0
+          : this.frozenColors[i];
+    color.needsUpdate = true;
   }
 
   setOrientation(orientation) {
@@ -263,6 +409,8 @@ export class FieldProbes {
     if (orientation) this.targetOrientation.copy(orientation);
     else this.targetOrientation.fromArray(this.orientation);
     this.targetOrientation.toArray(this.orientation);
+    if (this.environment)
+      this.secondaryTarget.fromArray(this.environment.sources[1].orientation);
     if (this.electronGroup.visible) {
       this.accumulator += Math.min(delta, 0.05);
       const steps = Math.floor((this.accumulator + 1e-12) / STEP);
@@ -275,6 +423,18 @@ export class FieldProbes {
           (step + 1) / steps,
         );
         this.stepQuaternion.toArray(this.stepOrientation);
+        if (this.environment) {
+          this.secondaryStep
+            .slerpQuaternions(
+              this.secondaryPrevious,
+              this.secondaryTarget,
+              (step + 1) / steps,
+            )
+            .toArray(this.secondaryOrientation);
+          this.environment.sources[0].orientation = this.stepOrientation;
+          this.environment.sources[1].orientation = this.secondaryOrientation;
+          this.environment.prepareOrientations();
+        }
         for (const particle of this.particles) {
           const previousPhase = particle.phase;
           const previousVisits = particle.visits;
@@ -288,6 +448,7 @@ export class FieldProbes {
             angularSpeed,
             STEP,
             this.spinAxis,
+            this.environment,
           );
           if (particle.phase === "released" && previousPhase !== "released") {
             this.ejections += 1;
@@ -305,13 +466,15 @@ export class FieldProbes {
           if (
             !particle.inbound &&
             (particle.phase === "released" || particle.phase === "free") &&
-            fieldMapDistance(
-              particle.position,
-              this.center,
-              this.orientation,
-              this.mapPoint,
-            ) >
-              this.radius * MH_MULTIPLIER
+            (this.environment
+              ? !this.environment.contains(particle.position)
+              : fieldMapDistance(
+                  particle.position,
+                  this.center,
+                  this.orientation,
+                  this.mapPoint,
+                ) >
+                this.radius * MH_MULTIPLIER)
           ) {
             this.releaseParticle(particle, true);
           }
@@ -323,7 +486,7 @@ export class FieldProbes {
             // rotation, band changes and ejection never transform old samples.
             particle.history.set(particle.position, particle.head * 3);
             particle.historyColors.set(
-              PARTICLE_COLORS[particle.phase],
+              this.colorForParticle(particle),
               particle.head * 3,
             );
           }
@@ -334,16 +497,30 @@ export class FieldProbes {
       this.writeGeometry();
     }
     this.previousOrientation.copy(this.targetOrientation);
+    if (this.environment) {
+      this.environment.sources[0].orientation = this.orientation;
+      this.secondaryTarget.toArray(this.secondaryOrientation);
+      this.environment.sources[1].orientation = this.secondaryOrientation;
+      this.environment.prepareOrientations();
+      this.secondaryPrevious.copy(this.secondaryTarget);
+    }
     if (this.compassGroup.visible) {
       for (const compass of this.compasses) {
-        sampleMagneticField(
-          compass.anchor.position.toArray(),
-          this.center,
-          this.moment,
-          this.radius,
-          intensity,
-          this.field,
-        );
+        if (this.environment)
+          this.environment.sampleMagnetic(
+            compass.anchor.position.toArray(),
+            this.field,
+            { componentField: this.mapPoint },
+          );
+        else
+          sampleMagneticField(
+            compass.anchor.position.toArray(),
+            this.center,
+            this.moment,
+            this.radius,
+            intensity,
+            this.field,
+          );
         this.direction.fromArray(this.field);
         compass.needle.visible = this.direction.lengthSq() > 1e-16;
         if (compass.needle.visible)
@@ -359,30 +536,38 @@ export class FieldProbes {
     if (!this.positions) return;
     this.counts = { free: 0, capturing: 0, captured: 0, released: 0 };
     this.bandCounts.fill(0);
+    this.captureCounts.fill(0);
     this.inboundCount = 0;
     this.particles.forEach((particle, i) => {
       this.counts[particle.phase] += 1;
       if (particle.inbound) this.inboundCount += 1;
+      if (particle.phase === "captured")
+        this.captureCounts[particle.sourceIndex ?? 0] += 1;
+      const source = this.environment?.sources[particle.sourceIndex ?? 0];
       const outside =
         particle.inbound ||
-        fieldMapDistance(
-          particle.position,
-          this.center,
-          this.orientation,
-          this.mapPoint,
-        ) >
-          this.radius * MH_MULTIPLIER;
+        (this.environment
+          ? !this.environment.contains(particle.position)
+          : fieldMapDistance(
+              particle.position,
+              this.center,
+              this.orientation,
+              this.mapPoint,
+            ) >
+            this.radius * MH_MULTIPLIER);
       this.bandCounts[
         outside
           ? 8
           : particleBand(
               particle.position,
-              this.center,
-              this.moment,
-              this.radius,
+              source?.center ?? this.center,
+              source?.moment ?? this.moment,
+              source?.radius ?? this.radius,
             )
       ] += 1;
-      this.colors.set(PARTICLE_COLORS[particle.phase], i * 3);
+      this.colors.set(this.colorForParticle(particle), i * 3);
+      this.visibility[i] =
+        this.capturedOnly && particle.phase !== "captured" ? 0 : 1;
       this.positions.set(particle.position, i * 3);
       if (!this.trails.visible) return;
       for (let j = 0; j < TRAIL_LENGTH - 1; j += 1) {
@@ -396,13 +581,14 @@ export class FieldProbes {
           for (let k = 0; k < 3; k += 1) {
             this.trailPositions[target + k] = particle.history[source + k];
             this.trailColors[target + k] =
-              particle.historyColors[source + k] * fade;
+              particle.historyColors[source + k] * fade * this.visibility[i];
           }
         }
       }
     });
     this.points.geometry.attributes.position.needsUpdate = true;
     this.points.geometry.attributes.color.needsUpdate = true;
+    this.points.geometry.attributes.particleVisible.needsUpdate = true;
     if (this.trails.visible) {
       this.trails.geometry.attributes.position.needsUpdate = true;
       this.trails.geometry.attributes.color.needsUpdate = true;
