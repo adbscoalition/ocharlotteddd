@@ -1263,7 +1263,7 @@ function syncProbeControls() {
   elements.singleColorRow.hidden = state.electronColorMode !== "single";
   elements.electronColorHint.textContent = {
     status:
-      "Cyan: free · Green: interacting · Gold: magnetized · White: escaping",
+      "Cyan: free · Green: interacting · Gold: captured · White: escaping",
     single: "All live electrons use your chosen color.",
     distance:
       "Warm near the source heart → violet at and beyond MH. Uses the dominant field’s radius.",
@@ -1336,17 +1336,17 @@ function updateElectronStateReadout() {
     elements.secondaryCaptureOutput.textContent = `Captured: Charlotte 1 ${captured[0]} · Charlotte 2 ${captured[1]}. Counts follow actual local forces.`;
   }
   const text = state.showElectrons
-    ? `${counts.free} free (${fieldProbes.inboundCount} not yet entered) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes · ${fieldProbes.reentryTimeouts} outside retries`
+    ? `${counts.free} free (${fieldProbes.inboundCount} not yet entered) · ${counts.capturing} interacting · ${counts.captured} captured · ${counts.released} escaping · ${fieldProbes.ejections} total escapes · ${fieldProbes.reentryTimeouts} outside retries`
     : "Electrons hidden";
   if (elements.electronStateOutput.textContent !== text)
     elements.electronStateOutput.textContent = text;
   const events = fieldProbes.events;
   const outcomeText = state.showElectrons
-    ? `${events.stays} magnetic bounces · ${events.bandChanges} band crossings · ${events.poleEjections} polar escapes · ${events.randomEjections} other escapes`
+    ? `${events.stays} bounces · ${events.bandChanges} band crossings · ${events.poleEjections} polar escapes · ${events.randomEjections} other escapes`
     : "";
   if (elements.electronOutcomeOutput.textContent !== outcomeText)
     elements.electronOutcomeOutput.textContent = outcomeText;
-  elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), launch speed ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random nonpolar spawn positions and independent random launch directions. Outward particles recycle beyond 4 × MH; particles still outside after 20 simulation seconds retry.`;
+  elements.electronReentryOutput.textContent = `Escaped replacements spawn around either pole, ${formatNumber(reentryRadius(), 3)} m from the heart, with random launch directions at ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Crossing MH allows time to return; replacement occurs beyond 4 × MH or after 20 simulation seconds continuously outside all fields.`;
   elements.electronBandOutput.hidden = !state.showElectrons;
   if (state.showElectrons) {
     const bandCounts = fieldProbes.bandCounts;
@@ -1733,7 +1733,7 @@ function updateViewerFieldReadout() {
       calculateMBand(state.secondaryCLT),
     );
     const localClt = state.secondaryCLT * band.strength;
-    elements.secondaryViewerReadout.textContent = `Viewer: ${band.label} · ${formatNumber(distance, 1)} m · ${formatNumber(localClt, localClt >= 100 ? 0 : 1)} CLT. Re-entry: ${formatNumber(calculateMBand(state.secondaryCLT) * 13, 2)} m at ${formatNumber(calculateMBand(state.secondaryCLT) * 2, 2)} m/s.`;
+    elements.secondaryViewerReadout.textContent = `Viewer: ${band.label} · ${formatNumber(distance, 1)} m · ${formatNumber(localClt, localClt >= 100 ? 0 : 1)} CLT. Polar re-entry: ${formatNumber(reentryRadius(), 3)} m at ${formatNumber(reentrySpeed(calculateMBand(state.secondaryCLT)), 2)} m/s.`;
   }
 }
 

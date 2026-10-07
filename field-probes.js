@@ -313,34 +313,15 @@ export class FieldProbes {
   }
 
   needsRecycling(particle) {
-    if (particle.inbound) {
-      if (particle.age >= MAX_REENTRY_TIME) return true;
-      return this.environment
-        ? this.environment.sources.every((source) =>
-            outsideReplacementBoundary(
-              particle.position,
-              source.center,
-              source.radius,
-            ),
-          )
-        : outsideReplacementBoundary(
-            particle.position,
-            this.center,
-            this.radius,
-          );
-    }
-    return (
-      (particle.phase === "released" || particle.phase === "free") &&
-      (this.environment
-        ? !this.environment.contains(particle.position)
-        : fieldMapDistance(
-            particle.position,
-            this.center,
-            this.orientation,
-            this.mapPoint,
-          ) >
-          this.radius * MH_MULTIPLIER)
-    );
+    if (particle.inbound && particle.age >= MAX_REENTRY_TIME) return true;
+    if (particle.outsideTime >= MAX_REENTRY_TIME) return true;
+    // Crossing MH marks an escape but leaves time and space to curve back.
+    // Only the wider boundary or a continuous outside timeout replaces it.
+    return this.environment
+      ? this.environment.sources.every((source) => outsideReplacementBoundary(
+          particle.position, source.center, source.radius,
+        ))
+      : outsideReplacementBoundary(particle.position, this.center, this.radius);
   }
 
   setVisibility(electrons, compasses, trails) {
@@ -517,8 +498,17 @@ export class FieldProbes {
             if (outcome) this.events[outcome] += 1;
           }
           particle.age += STEP;
+          const outside = this.environment
+            ? !this.environment.contains(particle.position)
+            : fieldMapDistance(
+                particle.position, this.center, this.orientation, this.mapPoint,
+              ) > this.radius * MH_MULTIPLIER;
+          particle.outsideTime = outside ? (particle.outsideTime || 0) + STEP : 0;
           if (this.needsRecycling(particle)) {
-            if (particle.inbound && particle.age >= MAX_REENTRY_TIME)
+            if (
+              (particle.inbound && particle.age >= MAX_REENTRY_TIME) ||
+              particle.outsideTime >= MAX_REENTRY_TIME
+            )
               this.reentryTimeouts++;
             this.releaseParticle(particle, true);
           }

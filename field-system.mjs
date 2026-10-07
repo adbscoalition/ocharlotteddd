@@ -2,6 +2,9 @@ import {
   sampleMagneticField,
   sampleElectricMotion,
   CHARGE_TO_MASS,
+  entrainedRotation,
+  captureBindingDepth,
+  captureRelaxationRate,
 } from "./electron-physics.mjs";
 import { MH_MULTIPLIER, transformFieldVector } from "./field-lines.mjs";
 
@@ -126,7 +129,8 @@ export function stirringVelocity(
       gain *
       overlap *
       envelope *
-      (Math.abs(a.angularSpeed) + Math.abs(b.angularSpeed))) /
+      (Math.abs(entrainedRotation(a.angularSpeed, a.intensity)) +
+        Math.abs(entrainedRotation(b.angularSpeed, b.intensity)))) /
     2;
   if (rate === 0) return out;
   const t = 0.5 - contrast * 0.15;
@@ -283,6 +287,25 @@ export class FieldSystem {
   }
   contains(position) {
     return insideAnyField(position, this.sources);
+  }
+  bindingDepth(position, attraction) {
+    let depth = 0;
+    for (const source of this.sources)
+      depth += captureBindingDepth(
+        position, source.center, source.radius, source.intensity, attraction,
+      );
+    return depth;
+  }
+  relaxationRate(position, attraction, sourceFields) {
+    let rate = 0;
+    for (let i = 0; i < this.sources.length; i++) {
+      const source = this.sources[i];
+      rate += captureRelaxationRate(
+        position, source.center, source.radius, source.intensity, attraction,
+        Math.hypot(...sourceFields[i]),
+      );
+    }
+    return rate;
   }
   dominant(position, previous) {
     return dominantSource(position, this.sources, previous, this.scratch);

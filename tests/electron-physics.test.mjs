@@ -11,6 +11,10 @@ import {
   populationSpeed,
   sampleElectricMotion,
   outsideReplacementBoundary,
+  captureBindingDepth,
+  entrainedRotation,
+  captureRelaxationRate,
+  relaxCaptureEnergy,
 } from "../electron-physics.mjs";
 import {
   sampleFieldLine,
@@ -206,7 +210,7 @@ test("inner population speeds exceed outer speeds without magnetic work", () => 
   const speeds = [0.2, 1, 3, 6].map((d) => populationSpeed(4, d * 4));
   speeds.slice(1).forEach((v, i) => assert.ok(v < speeds[i]));
 });
-test("random replacements launch exactly at 2 MH and 2 M meters per second", () => {
+test("replacements launch around both poles at 2 M meters per second", () => {
   const rand = seeded();
   for (const radius of [1.09, 4.107028973825681, 21.44, 40.60553621054448])
     for (let i = 0; i < 100; i++) {
@@ -215,12 +219,12 @@ test("random replacements launch exactly at 2 MH and 2 M meters per second", () 
       near(Math.hypot(...p.position), reentryRadius(radius), 1e-9);
       near(Math.hypot(...p.velocity), reentrySpeed(radius), 1e-9);
       assert.ok(
-        Math.abs(p.position[1]) / Math.hypot(...p.position) <= 0.85 + 1e-10,
+        Math.abs(p.position[1]) / Math.hypot(...p.position) >= 0.995 - 1e-10,
       );
-      assert.ok(p.inbound);
+      assert.equal(p.inbound, false);
     }
 });
-test("replacement directions cover azimuth and latitude without polar concentration", () => {
+test("pole spawns vary in azimuth and cover both poles without a hemispheric bias", () => {
   const rand = seeded(),
     octants = new Set();
   let meanY = 0;
@@ -228,27 +232,28 @@ test("replacement directions cover azimuth and latitude without polar concentrat
     const p = fresh(rand);
     placeIncomingReplacement(p, center, 4, identity);
     octants.add(p.position.map(Math.sign).join(","));
-    meanY += p.position[1] / 52;
+    meanY += p.position[1] / reentryRadius(4);
   }
   assert.equal(octants.size, 8);
   assert.ok(Math.abs(meanY / 1000) < 0.04);
 });
-test("tilted replacement positions remain at 2 MH and avoid the tilted polar caps", () => {
+test("tilted replacement positions follow the poles about the correct source heart", () => {
   const q = [0, 0, Math.SQRT1_2, Math.SQRT1_2],
     p = fresh();
   placeIncomingReplacement(p, [1, 2, 3], 4, q);
   const r = p.position.map((x, j) => x - [1, 2, 3][j]),
     axis = transformFieldVector(moment, q);
-  near(Math.hypot(...r), 52);
+  near(Math.hypot(...r), reentryRadius(4));
   assert.ok(
-    Math.abs(r.reduce((s, x, j) => s + x * axis[j], 0)) / 52 <= 0.85 + 1e-10,
+    Math.abs(r.reduce((s, x, j) => s + x * axis[j], 0)) / Math.hypot(...r) >= 0.995 - 1e-10,
   );
   near(Math.hypot(...p.velocity), 8);
 });
 test("inward-moving zero-field particles can cross MH and stay ballistic", () => {
   const p = fresh();
-  placeIncomingReplacement(p, center, 4, identity);
-  p.velocity = p.position.map((v) => (-v * 8) / 52);
+  p.position = [52, 0, 0];
+  p.velocity = [-8, 0, 0];
+  p.inbound = true;
   evolve(p, 0, 3.4);
   assert.equal(p.inbound, false);
   assert.ok(fieldMapDistance(p.position, center, identity) < 26);
@@ -317,7 +322,7 @@ test("magnetic mirror bouncing emerges from the Lorentz solver without prescribe
   assert.ok(maxY < 1.2);
   near(Math.hypot(...p.velocity), Math.hypot(5.2, 3), 1e-8);
 });
-test("field strength increases the magnetized population", () => {
+test("field strength increases the captured population", () => {
   const run = (I) => {
     const rand = seeded();
     const ps = Array.from({ length: 64 }, () => fresh(rand));
@@ -468,7 +473,7 @@ test("replacement launch directions are isotropic and independent of spawn posit
     const p = fresh(rand);
     placeIncomingReplacement(p, center, 4, identity);
     const radial =
-      p.position.reduce((sum, v, j) => sum + v * p.velocity[j], 0) / (52 * 8);
+      p.position.reduce((sum, v, j) => sum + v * p.velocity[j], 0) / (reentryRadius(4) * 8);
     inward += radial < 0;
     radialMean += radial;
     p.velocity.forEach((v, j) => (mean[j] += v / 8));
@@ -617,4 +622,113 @@ test("maximum supported rotation inflow remains finite under strong and tilted f
     assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
     assert.ok(p.substeps <= 64);
   }
+});
+
+test("weak sources attract incoming particles beyond MH and stronger sources pull more", () => {
+  const p = [52, 3, -2], a = [0, 0, 0], flow = [0, 0, 0];
+  const radialForce = (intensity) => {
+    sampleElectricMotion(p, center, 4, intensity, 0, moment, a, flow, 2);
+    return -a.reduce((sum, v, i) => sum + v * p[i], 0) / Math.hypot(...p);
+  };
+  near(radialForce(0), 0);
+  assert.ok(radialForce(0.001) > 0.1);
+  assert.ok(radialForce(1) > radialForce(0.001));
+});
+
+test("rotational entrainment is bounded, reversible and smooth at zero RPM", () => {
+  for (const intensity of [0.001, 0.02, 1, 50]) {
+    near(entrainedRotation(0, intensity), 0);
+    near(entrainedRotation(-35, intensity), -entrainedRotation(35, intensity));
+    assert.ok(entrainedRotation(35, intensity) < 1.25);
+    assert.ok(entrainedRotation(35, intensity) > entrainedRotation(12, intensity));
+    near(entrainedRotation(1e-5, intensity), 1e-5, 1e-12);
+  }
+  near(entrainedRotation(35, 0), 0);
+});
+
+test("radial binding depth is finite, strength dependent and ends at MH", () => {
+  const at = (r, intensity = 1, attraction = 2) =>
+    captureBindingDepth([r, 0, 0], center, 4, intensity, attraction);
+  assert.ok(Number.isFinite(at(0)) && at(0) > at(4) && at(4) > at(24));
+  near(at(26), 0);
+  near(at(52), 0);
+  near(at(4, 0), 0);
+  near(at(4, 1, 0), 0);
+  assert.ok(at(4, 1) > at(4, 0.001));
+  near(captureBindingDepth([8, 0, 0], center, 8, 1, 2), 4 * at(4));
+});
+
+test("capture relaxation removes excess energy smoothly without stopping lower-energy orbits", () => {
+  const velocity = [6, 2, -3], original = [...velocity];
+  relaxCaptureEnergy(velocity, 2, 4, 1, 0.1);
+  assert.ok(Math.hypot(...velocity) < Math.hypot(...original));
+  assert.ok(Math.hypot(...velocity) > Math.sqrt(4.8));
+  velocity.forEach((v, i) => near(v / original[i], velocity[0] / original[0]));
+  const split = [...original];
+  relaxCaptureEnergy(split, 2, 4, 1, 0.05);
+  relaxCaptureEnergy(split, 2, 4, 1, 0.05);
+  split.forEach((v, i) => near(v, velocity[i]));
+  const orbit = [1, 0.2, 0.3], before = [...orbit];
+  relaxCaptureEnergy(orbit, 100, 4, 1, 1);
+  assert.deepEqual(orbit, before);
+  relaxCaptureEnergy(original, 0, 4, 1, 1);
+  assert.deepEqual(original, [6, 2, -3]);
+  near(captureRelaxationRate([1, 0, 0], center, 4, 0, 2, 0), 0);
+  near(captureRelaxationRate([1, 0, 0], center, 4, 1, 0, 100), 0);
+});
+
+test("single-field electrons can cross back through MH and become captured or interacting again", () => {
+  const p = fresh();
+  p.position = [26.02, 0, 0];
+  p.velocity = [-1, 0, 0];
+  p.phase = "released";
+  p.ejectionReason = "escape";
+  p.ejectionRoute = "random";
+  p.electricCoupling = 0;
+  p.scattering = false;
+  evolve(p, 0.02, 0.1);
+  assert.ok(Math.hypot(...p.position) < 26);
+  assert.equal(p.phase, "capturing");
+  assert.equal(p.ejectionReason, null);
+  assert.equal(p.ejectionRoute, null);
+  near(Math.hypot(...p.velocity), 1);
+});
+
+test("weak and strong tilted fields retain particles at 350 RPM without runaway energy", () => {
+  const tilt = 13 * Math.PI / 360, omega = 350 * Math.PI * 2 / 60;
+  for (const clt of [1, 20, 1000]) {
+    const radius = 1.09 + 40.7 / (1 + (5142 / clt) ** 1.542), random = seeded();
+    const particles = Array.from({ length: 32 }, () => {
+      const p = fresh(random, radius);
+      p.attraction = 2;
+      p.inflow = 1;
+      return p;
+    });
+    for (let step = 0; step < 2400; step++) {
+      const angle = step / 120 * omega / 2;
+      const orientation = [Math.sin(tilt) * Math.sin(angle), Math.cos(tilt) * Math.sin(angle), Math.sin(tilt) * Math.cos(angle), Math.cos(tilt) * Math.cos(angle)];
+      for (const p of particles)
+        advanceFieldParticle(p, center, radius, clt / 1000, orientation, omega, 1 / 120);
+    }
+    const retained = particles.filter(p => Math.hypot(...p.position) <= 6.5 * radius).length;
+    assert.ok(retained >= 24, `${clt} CLT retained ${retained}/32`);
+    assert.ok(particles.filter(p => p.phase === "captured").length >= 16);
+    assert.ok(particles.every(p => p.position.concat(p.velocity).every(Number.isFinite)));
+    assert.ok(Math.max(...particles.map(p => Math.hypot(...p.velocity))) < radius * 12);
+  }
+});
+
+test("weak rotating fields can retain electrons injected from both poles", () => {
+  const radius = 1.097818682339322, random = seeded(182);
+  const particles = Array.from({ length: 32 }, () => {
+    const p = fresh(random, radius);
+    placeIncomingReplacement(p, center, radius, identity);
+    p.attraction = 2;
+    p.inflow = 1;
+    return p;
+  });
+  assert.ok(particles.some(p => p.position[1] > 0) && particles.some(p => p.position[1] < 0));
+  for (const p of particles) evolve(p, 0.02, 10, radius, 350);
+  assert.ok(particles.filter(p => p.phase === "captured").length >= 24);
+  assert.ok(particles.filter(p => Math.hypot(...p.position) < 6.5 * radius).length >= 28);
 });

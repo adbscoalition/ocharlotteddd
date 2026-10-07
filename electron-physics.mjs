@@ -7,15 +7,71 @@ import {
 } from "./field-lines.mjs";
 
 export const CHARGE_TO_MASS = -5;
-export const REENTRY_RADIUS_FACTOR = 2;
+export const POLE_SPAWN_FACTOR = 1.08;
 export const REENTRY_SPEED_FACTOR = 2;
 export const RECYCLE_RADIUS_FACTOR = 4;
 export const MAX_REENTRY_TIME = 20;
+const CAPTURE_RANGE = MH_MULTIPLIER * 2;
+const ELECTRIC_RESPONSE_SCALE = 0.003;
+const OUTER_ATTRACTION = 0.12;
+
+// The illustrative CLT electric trap responds at low strength, while B itself
+// remains linear in intensity. Both terms still vanish for an inactive source.
+const captureStrength = (intensity, attraction) =>
+  (intensity / (ELECTRIC_RESPONSE_SCALE + intensity)) * attraction;
+
+// A rotating source does not force particles into arbitrarily fast corotation.
+// Model finite plasma entrainment; preserve direction and permit rotational lag.
+export function entrainedRotation(angularSpeed, intensity) {
+  if (intensity <= 0 || angularSpeed === 0) return 0;
+  const limit = 1.25 * Math.sqrt(intensity / (ELECTRIC_RESPONSE_SCALE + intensity));
+  return angularSpeed / Math.hypot(1, angularSpeed / limit);
+}
+
+export function captureBindingDepth(
+  position, center, radius, intensity, attraction = 1,
+) {
+  const x = position[0] - center[0],
+    y = position[1] - center[1],
+    z = position[2] - center[2];
+  const ratio2 = (x * x + y * y + z * z) / (radius * radius);
+  const edge2 = MH_MULTIPLIER ** 2;
+  if (ratio2 >= edge2) return 0;
+  const inner = 1.4 * (1 / Math.sqrt(1 + ratio2) - 1 / Math.sqrt(1 + edge2));
+  const outer =
+    OUTER_ATTRACTION * CAPTURE_RANGE ** 2 *
+    (1 / Math.sqrt(1 + ratio2 / CAPTURE_RANGE ** 2) -
+      1 / Math.sqrt(1 + edge2 / CAPTURE_RANGE ** 2));
+  return captureStrength(intensity, attraction) * radius ** 2 * (inner + outer);
+}
+
+// Modeled plasma relaxation removes excess kinetic energy, not orbital motion
+// below the trapping energy. Pure magnetic reference runs omit this term.
+export function captureRelaxationRate(
+  position, center, radius, intensity, attraction, localField,
+) {
+  const x = position[0] - center[0],
+    y = position[1] - center[1],
+    z = position[2] - center[2];
+  const distance2 = x * x + y * y + z * z;
+  const envelope = (1 + distance2 / (radius * MH_MULTIPLIER) ** 2) ** 2;
+  return captureStrength(intensity, attraction) * (0.15 + 0.025 * localField) / envelope;
+}
+
+export function relaxCaptureEnergy(velocity, rate, bindingDepth, radius, dt) {
+  const speed2 = velocity.reduce((sum, v) => sum + v * v, 0);
+  const target2 = Math.max(0.02 * radius ** 2, 1.2 * bindingDepth);
+  if (rate <= 0 || speed2 <= target2) return;
+  const factor = Math.sqrt(
+    (target2 + (speed2 - target2) * Math.exp(-2 * rate * dt)) / speed2,
+  );
+  for (let j = 0; j < 3; j++) velocity[j] *= factor;
+}
 const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5].map((band) => ({
   band,
   inverseWidth2: 1 / (0.11 + band * 0.12) ** 2,
   inverseHeight2: 1 / (0.75 + band * 0.2) ** 2,
-  gain: 1.2 / Math.sqrt(1 + band),
+  gain: 1.5 / Math.sqrt(1 + band),
 }));
 
 // Smooth finite current source and external dipole, shared with the rendered
@@ -99,8 +155,7 @@ export function populationSpeed(radius, distance, speed = 1, spread = 1) {
     (radius * speed * spread * 3.8) / Math.sqrt(1 + (2 * distance) / radius)
   );
 }
-export const reentryRadius = (radius) =>
-  radius * MH_MULTIPLIER * REENTRY_RADIUS_FACTOR;
+export const reentryRadius = () => SOURCE_RADIUS * POLE_SPAWN_FACTOR;
 export const reentrySpeed = (radius) => radius * REENTRY_SPEED_FACTOR;
 
 function randomDirection(random, out, maxCosine = 1) {
@@ -159,6 +214,7 @@ export function initializeFieldParticle(
   p.phase = "free";
   p.inbound = false;
   p.age = 0;
+  p.outsideTime = 0;
   p.visits = 0;
   p.ejectionReason = null;
   p.ejectionRoute = null;
@@ -202,7 +258,14 @@ export function initializeFieldParticle(
 }
 
 export function placeIncomingReplacement(p, center, radius, orientation) {
-  directionAwayFromPoles(p.random || Math.random, p.scratch);
+  const random = p.random || Math.random;
+  const cosine = 0.995 + random() * 0.005;
+  const sign = random() < 0.5 ? -1 : 1;
+  const phi = random() * Math.PI * 2;
+  const radial = Math.sqrt(1 - cosine * cosine);
+  p.scratch[0] = Math.cos(phi) * radial;
+  p.scratch[1] = sign * cosine;
+  p.scratch[2] = Math.sin(phi) * radial;
   transformFieldVector(p.scratch, orientation, p.scratch);
   const distance = reentryRadius(radius),
     speed = reentrySpeed(radius);
@@ -211,10 +274,11 @@ export function placeIncomingReplacement(p, center, radius, orientation) {
   }
   // Launch independently of the spawn position. Include inward, outward,
   // tangential and polar velocities; the fields steer subsequent motion.
-  randomDirection(p.random || Math.random, p.velocity);
+  randomDirection(random, p.velocity);
   for (let j = 0; j < 3; j++) p.velocity[j] *= speed;
   p.phase = "free";
-  p.inbound = true;
+  p.inbound = false;
+  p.outsideTime = 0;
   p.ejectionReason = null;
   p.ejectionRoute = null;
   p.lastBand = null;
@@ -240,8 +304,11 @@ export function sampleElectricMotion(
     y = position[1] - center[1],
     z = position[2] - center[2];
   const ratio2 = (x * x + y * y + z * z) / (radius * radius);
-  const strength = (intensity / (1 + intensity)) * attraction;
-  const capture = (1.4 * strength) / (1 + ratio2) ** 1.5;
+  const strength = captureStrength(intensity, attraction);
+  const capture =
+    strength *
+    (1.4 / (1 + ratio2) ** 1.5 +
+      OUTER_ATTRACTION / (1 + ratio2 / CAPTURE_RANGE ** 2) ** 1.5);
   acceleration[0] = -x * capture;
   acceleration[1] = -y * capture;
   acceleration[2] = -z * capture;
@@ -288,7 +355,8 @@ export function sampleElectricMotion(
   acceleration[0] += radialWeight * px + axialForce * magneticAxis[0];
   acceleration[1] += radialWeight * py + axialForce * magneticAxis[1];
   acceleration[2] += radialWeight * pz + axialForce * magneticAxis[2];
-  const rotation = angularSpeed / (1 + ratio2 * ratio2);
+  const rotation =
+    entrainedRotation(angularSpeed, intensity) / (1 + ratio2 * ratio2);
   flow[0] = rotation * (axis[1] * z - axis[2] * y);
   flow[1] = rotation * (axis[2] * x - axis[0] * z);
   flow[2] = rotation * (axis[0] * y - axis[1] * x);
@@ -383,6 +451,12 @@ function sampleParticleElectric(
       p.moment,
       p.inflow ?? 0,
     );
+  p.bindingDepth = environment
+    ? environment.bindingDepth(position, p.attraction ?? 1)
+    : captureBindingDepth(position, center, radius, intensity, p.attraction ?? 1);
+  p.captureRate = environment
+    ? environment.relaxationRate(position, p.attraction ?? 1, p.sourceFields)
+    : captureRelaxationRate(position, center, radius, intensity, p.attraction ?? 1, Math.hypot(...p.field));
 }
 
 export function advanceFieldParticle(
@@ -467,6 +541,7 @@ export function advanceFieldParticle(
         p.acceleration[j] *= coupling;
         p.flow[j] *= coupling;
       }
+    relaxCaptureEnergy(p.velocity, p.captureRate * coupling, p.bindingDepth * coupling, radius, h / 2);
     for (let j = 0; j < 3; j++) {
       p.scratch[j] = p.position[j];
       p.trialVelocity[j] = p.velocity[j];
@@ -496,6 +571,7 @@ export function advanceFieldParticle(
         p.flow[j] *= coupling;
       }
     advanceElectron(p.position, p.velocity, p.field, h, p.acceleration, p.flow);
+    relaxCaptureEnergy(p.velocity, p.captureRate * coupling, p.bindingDepth * coupling, radius, h / 2);
   }
   if (!p.inbound && p.scattering !== false) scatterVelocity(p, dt, intensity);
   sampleParticleField(p, p.position, center, radius, intensity, environment);
@@ -527,12 +603,21 @@ export function advanceFieldParticle(
       : distance > radius * MH_MULTIPLIER)
   )
     markReleased(p, "escape");
-  else if (environment || p.phase !== "released")
+  else {
+    if (p.phase === "released") {
+      p.ejectionReason = null;
+      p.ejectionRoute = null;
+      p.parallelSign = 0;
+    }
+    const bindingDepth = coupling * (environment
+      ? environment.bindingDepth(p.position, p.attraction ?? 1)
+      : captureBindingDepth(p.position, center, radius, intensity, p.attraction ?? 1));
     p.phase = p.inbound
       ? "free"
-      : magnetization < 0.35
+      : magnetization < 0.35 || totalSpeed * totalSpeed / 2 < bindingDepth
         ? "captured"
         : "capturing";
+  }
   const band = particleBand(p.position, center, p.moment, radius);
   if (p.phase === "captured") {
     if (p.lastBand !== null && p.lastBand !== band) {

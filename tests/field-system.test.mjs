@@ -295,3 +295,15 @@ test("combined and single-source inflow integration produce the same trajectory"
   a.position.forEach((v, i) => near(v, b.position[i], 1e-7));
   a.velocity.forEach((v, i) => near(v, b.velocity[i], 1e-7));
 });
+
+test("capture binding and relaxation add per source and disabled sources contribute nothing", () => {
+  const a = source([-3, 0, 0], 1), b = source([3, 0, 0], 0.02);
+  const position = [0, 1, 0], env = new FieldSystem([a, b]);
+  const fields = [a, b].map(s => sampleMagneticField(position, s.center, s.moment, s.radius, s.intensity));
+  const singleA = new FieldSystem([a]), singleB = new FieldSystem([b]);
+  near(env.bindingDepth(position, 2), singleA.bindingDepth(position, 2) + singleB.bindingDepth(position, 2));
+  near(env.relaxationRate(position, 2, fields), singleA.relaxationRate(position, 2, [fields[0]]) + singleB.relaxationRate(position, 2, [fields[1]]));
+  b.intensity = 0;
+  near(env.bindingDepth(position, 2), singleA.bindingDepth(position, 2));
+  near(env.relaxationRate(position, 2, fields), singleA.relaxationRate(position, 2, [fields[0]]));
+});
