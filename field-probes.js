@@ -29,6 +29,7 @@ const PARTICLE_COLORS = {
 export class FieldProbes {
   constructor(scene, center) {
     this.environment = null;
+    this.primarySource = null;
     this.capturedOnly = false;
     this.colorMode = "status";
     this.singleColor = new THREE.Color("#ffd34d");
@@ -277,13 +278,19 @@ export class FieldProbes {
         ? Math.min(particle.sourceIndex ?? 0, 1)
         : particle.populationIndex % 2
       : 0;
-    const source = this.environment?.sources[index];
+    const source = this.environment?.sources[index] ?? this.primarySource;
     particle.sourceIndex = index;
     particle.transfers = 0;
     const center = source?.center ?? this.center;
     const radius = source?.radius ?? this.radius;
     const orientation = source?.orientation ?? this.orientation;
-    initializeFieldParticle(particle, center, radius, orientation, this.speed);
+    initializeFieldParticle(particle, center, radius, orientation, this.speed, Math.random, {
+      intensity: source?.intensity ?? 1,
+      angularSpeed: source?.angularSpeed ?? 0,
+      spinAxis: source?.spinAxis ?? this.spinAxis,
+      attraction: this.attraction,
+      inflow: this.inflow,
+    });
     if (replacement) {
       placeIncomingReplacement(particle, center, radius, orientation);
       this.replacements += 1;

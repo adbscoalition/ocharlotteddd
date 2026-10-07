@@ -22,6 +22,7 @@ import {
   SOURCE_RADIUS,
   EXTERIOR_FRACTION,
   fieldMapDistance,
+  particleBand,
 } from "../field-lines.mjs";
 const near = (a, b, t = 1e-9) => assert.ok(Math.abs(a - b) < t, `${a} != ${b}`);
 const identity = [0, 0, 0, 1],
@@ -192,9 +193,14 @@ test("visible curve tangents align with the same B sampled by electrons and comp
     }
 });
 
-test("initial particles fill a varied volume instead of polar beams or a single shell", () => {
+test("initial particles occupy multiple thick rings with azimuthal launch motion", () => {
   const rand = seeded(),
-    ps = Array.from({ length: 200 }, () => fresh(rand));
+    ps = Array.from({ length: 200 }, () => {
+      const p = {};
+      initializeFieldParticle(p, center, 4, identity, 1, rand,
+        { intensity: 1, angularSpeed: 12, attraction: 2, inflow: 1 });
+      return p;
+    });
   const radii = ps.map((p) => Math.hypot(...p.position));
   assert.ok(new Set(radii.map((r) => r.toFixed(3))).size > 180);
   assert.ok(
@@ -205,6 +211,9 @@ test("initial particles fill a varied volume instead of polar beams or a single 
   assert.ok(
     ps.every((p) => p.position.concat(p.velocity).every(Number.isFinite)),
   );
+  const bands = new Set(ps.map(p => particleBand(p.position, center, moment, 4)));
+  assert.equal(bands.size, 7);
+  assert.ok(ps.every(p => Math.abs(p.position[0] * p.velocity[2] - p.position[2] * p.velocity[0]) > 0.001));
 });
 test("inner population speeds exceed outer speeds without magnetic work", () => {
   const speeds = [0.2, 1, 3, 6].map((d) => populationSpeed(4, d * 4));
@@ -219,7 +228,7 @@ test("replacements launch around both poles at 2 M meters per second", () => {
       near(Math.hypot(...p.position), reentryRadius(radius), 1e-9);
       near(Math.hypot(...p.velocity), reentrySpeed(radius), 1e-9);
       assert.ok(
-        Math.abs(p.position[1]) / Math.hypot(...p.position) >= 0.995 - 1e-10,
+        Math.abs(p.position[1]) / Math.hypot(...p.position) >= Math.SQRT1_2 - 1e-10,
       );
       assert.equal(p.inbound, false);
     }
@@ -245,7 +254,7 @@ test("tilted replacement positions follow the poles about the correct source hea
     axis = transformFieldVector(moment, q);
   near(Math.hypot(...r), reentryRadius(4));
   assert.ok(
-    Math.abs(r.reduce((s, x, j) => s + x * axis[j], 0)) / Math.hypot(...r) >= 0.995 - 1e-10,
+    Math.abs(r.reduce((s, x, j) => s + x * axis[j], 0)) / Math.hypot(...r) >= Math.SQRT1_2 - 1e-10,
   );
   near(Math.hypot(...p.velocity), 8);
 });
@@ -326,6 +335,9 @@ test("field strength increases the captured population", () => {
   const run = (I) => {
     const rand = seeded();
     const ps = Array.from({ length: 64 }, () => fresh(rand));
+    // Compare the same energetic incoming ensemble, independently of the
+    // strength-specific circular launch conditions used for resident rings.
+    for (const p of ps) p.velocity = p.velocity.map(v => v * 10);
     for (const p of ps) evolve(p, I, 2);
     return ps.filter((p) => p.phase === "captured").length;
   };
@@ -462,29 +474,27 @@ test("attraction control scales electric capture and can disable it", () => {
   }
 });
 
-test("replacement launch directions are isotropic and independent of spawn position", () => {
+test("polar injection spans flux shells and launches out along loops with orbital pitch", () => {
   const rand = seeded(312),
     mean = [0, 0, 0],
     octants = new Set();
-  let inward = 0,
-    radialMean = 0,
-    polar = 0;
+  const shells = new Set();
+  let outward = 0;
   for (let i = 0; i < 4000; i++) {
     const p = fresh(rand);
     placeIncomingReplacement(p, center, 4, identity);
     const radial =
       p.position.reduce((sum, v, j) => sum + v * p.velocity[j], 0) / (reentryRadius(4) * 8);
-    inward += radial < 0;
-    radialMean += radial;
+    outward += radial > 0;
     p.velocity.forEach((v, j) => (mean[j] += v / 8));
     octants.add(p.velocity.map(Math.sign).join(","));
-    if (Math.abs(p.velocity[1] / 8) > 0.9) polar++;
+    shells.add(Math.round(Math.hypot(...p.position) ** 3 / (p.position[0] ** 2 + p.position[2] ** 2)));
+    assert.ok(Math.abs(p.position[0] * p.velocity[2] - p.position[2] * p.velocity[0]) > 0.001);
   }
   assert.equal(octants.size, 8);
-  assert.ok(inward > 1800 && inward < 2200);
-  assert.ok(Math.abs(radialMean / 4000) < 0.04);
+  assert.ok(outward > 3900);
+  assert.ok(shells.size >= 12);
   mean.forEach((v) => assert.ok(Math.abs(v / 4000) < 0.04));
-  assert.ok(polar > 300 && polar < 500);
 });
 
 test("random replacement directions stay ballistic without fields", () => {
@@ -504,12 +514,12 @@ test("outward replacement recycling has room to travel beyond the spawn shell", 
   assert.equal(outsideReplacementBoundary([54, 1, -3], [2, 1, -3], 4), false);
 });
 
-test("rotation inflow scales with RPM and gain, vanishes without a source, and leaves trapping independent", () => {
+test("ring transport scales with RPM and gain, vanishes without a source, and leaves trapping independent", () => {
   const sample = (omega, I, gain) => {
     const a = [0, 0, 0],
       u = [0, 0, 0];
     sampleElectricMotion(
-      [4, 2, 1],
+      [5, 0, 0],
       center,
       4,
       I,
@@ -530,7 +540,7 @@ test("rotation inflow scales with RPM and gain, vanishes without a source, and l
     fastBase = sample(24, 1, 0);
   assert.deepEqual(inward.a, base.a);
   assert.ok(
-    inward.u.reduce((sum, v, i) => sum + (v - base.u[i]) * [4, 2, 1][i], 0) < 0,
+    inward.u.reduce((sum, v, i) => sum + (v - base.u[i]) * [5, 0, 0][i], 0) < 0,
   );
   inward.u.forEach((v, i) => {
     near(twice.u[i] - base.u[i], 2 * (v - base.u[i]));
@@ -731,4 +741,86 @@ test("weak rotating fields can retain electrons injected from both poles", () =>
   for (const p of particles) evolve(p, 0.02, 10, radius, 350);
   assert.ok(particles.filter(p => p.phase === "captured").length >= 24);
   assert.ok(particles.filter(p => Math.hypot(...p.position) < 6.5 * radius).length >= 28);
+});
+
+test("resident rings launch close to circular force balance in the actual source", () => {
+  for (const intensity of [0.02, 1, 10]) {
+    const p = {};
+    initializeFieldParticle(p, center, 4, identity, 1, () => 0.5,
+      { intensity, angularSpeed: 12, attraction: 2, inflow: 1 });
+    const rho = Math.hypot(p.position[0], p.position[2]);
+    const radial = p.position.map(v => v / rho);
+    const a = [0, 0, 0], u = [0, 0, 0], b = sampleMagneticField(p.position, center, moment, 4, intensity);
+    sampleElectricMotion(p.position, center, 4, intensity, 12, moment, a, u, 2, moment, 1);
+    const relative = p.velocity.map((v, j) => v - u[j]);
+    const cross = [relative[1] * b[2] - relative[2] * b[1], relative[2] * b[0] - relative[0] * b[2], relative[0] * b[1] - relative[1] * b[0]];
+    const radialForce = a.reduce((sum, v, j) => sum + (v - 5 * cross[j]) * radial[j], 0);
+    near(radialForce, -p.velocity.reduce((sum, v) => sum + v * v, 0) / rho, 1e-8);
+  }
+});
+
+test("capture cooling preserves bounded orbital momentum while relaxing radial energy", () => {
+  const v = [5, 0, 3];
+  relaxCaptureEnergy(v, 2, 1, 1, 0.5, [0, 0, 1]);
+  near(v[2], 3);
+  assert.ok(v[0] > 0 && v[0] < 5);
+  const orbit = [0, 0, 3];
+  relaxCaptureEnergy(orbit, 100, 1, 1, 1, [0, 0, 1]);
+  assert.deepEqual(orbit, [0, 0, 3]);
+  const energetic = [0, 0, 20];
+  relaxCaptureEnergy(energetic, 2, 1, 1, 0.5, [0, 0, 1]);
+  assert.ok(energetic[2] < 20 && energetic[2] > 4);
+});
+
+test("ring transport is smooth and does not drain settled flux loops toward CE", () => {
+  const flow = position => {
+    const a = [0, 0, 0], u = [0, 0, 0], baseline = [0, 0, 0];
+    sampleElectricMotion(position, center, 4, 1, 12, moment, a, u, 2, moment, 1);
+    sampleElectricMotion(position, center, 4, 1, 12, moment, a, baseline, 2, moment, 0);
+    return u.map((v, j) => v - baseline[j]);
+  };
+  for (const band of [0.2, 0.5, 1, 1.7, 3.5, 4.5]) {
+    const at = flow([4 * band, 0, 0]);
+    assert.ok(Math.hypot(...at) < 0.002);
+    assert.ok(flow([4 * band * 0.95, 0, 0])[0] > 0);
+    assert.ok(flow([4 * band * 1.05, 0, 0])[0] < 0);
+  }
+  for (const x of [0, 0.72, 1.4, 3, 5.4, 10.4, 16, 22]) {
+    const a = flow([x - 1e-7, 0.1, 0]), b = flow([x + 1e-7, 0.1, 0]);
+    assert.ok(a.concat(b).every(Number.isFinite));
+    assert.ok(Math.hypot(...a.map((v, j) => v - b[j])) < 1e-5);
+  }
+  const nearAxis = flow([1e-8, 0.5, 0]), onAxis = flow([0, 0.5, 0]);
+  assert.ok(Math.hypot(...nearAxis.map((v, j) => v - onAxis[j])) < 1e-6);
+});
+
+test("resident and polar-injected ensembles keep moving across several bands over a minute", () => {
+  const radius = 4.107028973825681, intensity = 1, omega = 120 * Math.PI / 30;
+  for (const replacement of [false, true]) {
+    const random = seeded(42);
+    const particles = Array.from({ length: 48 }, () => {
+      const p = {};
+      initializeFieldParticle(p, center, radius, identity, 1, random,
+        { intensity, angularSpeed: omega, attraction: 2, inflow: 1 });
+      if (replacement) placeIncomingReplacement(p, center, radius, identity);
+      p.attraction = 2; p.inflow = 1;
+      return p;
+    });
+    const turns = particles.map(() => 0), oldAngles = particles.map(p => Math.atan2(p.position[2], p.position[0]));
+    for (let step = 0; step < 7200; step++) {
+      for (const [i, p] of particles.entries()) {
+        advanceFieldParticle(p, center, radius, intensity, identity, omega, 1 / 120);
+        const angle = Math.atan2(p.position[2], p.position[0]);
+        turns[i] += Math.atan2(Math.sin(angle - oldAngles[i]), Math.cos(angle - oldAngles[i]));
+        oldAngles[i] = angle;
+      }
+    }
+    const bands = particles.map(p => particleBand(p.position, center, moment, radius));
+    assert.ok(bands.filter(b => b === 1).length < particles.length * 0.45, `CE crowding after polar=${replacement}: ${bands}`);
+    assert.ok(new Set(bands).size >= 4);
+    assert.ok(bands.filter(b => b >= 3 && b <= 7).length >= particles.length * 0.35);
+    assert.ok(turns.filter(t => Math.abs(t) > Math.PI / 2).length >= particles.length * 0.75);
+    assert.ok(particles.filter(p => Math.hypot(...p.position) < radius * 6.5).length >= particles.length * 0.9);
+    assert.ok(particles.filter(p => p.phase === "captured").length >= particles.length * 0.5);
+  }
 });

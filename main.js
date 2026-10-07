@@ -445,6 +445,7 @@ function updateSourceMetadata() {
   fieldAxis.toArray(primary.moment);
   fieldSpinAxis.toArray(primary.spinAxis);
   primary.angularSpeed = (state.rpm * Math.PI * 2) / 60;
+  fieldProbes.primarySource = primary;
   secondaryFlipGroup.getWorldQuaternion(secondaryOrientation);
   secondaryJitterGroup.getWorldQuaternion(secondarySpinOrientation);
   const secondary = sources[1];
@@ -1346,7 +1347,7 @@ function updateElectronStateReadout() {
     : "";
   if (elements.electronOutcomeOutput.textContent !== outcomeText)
     elements.electronOutcomeOutput.textContent = outcomeText;
-  elements.electronReentryOutput.textContent = `Escaped replacements spawn around either pole, ${formatNumber(reentryRadius(), 3)} m from the heart, with random launch directions at ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Crossing MH allows time to return; replacement occurs beyond 4 × MH or after 20 simulation seconds continuously outside all fields.`;
+  elements.electronReentryOutput.textContent = `Escaped replacements enter through either pole's cap, ${formatNumber(reentryRadius(), 3)} m from the heart, along varied loops with orbital pitch at ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Crossing MH allows time to return; replacement occurs beyond 4 × MH or after 20 simulation seconds continuously outside all fields.`;
   elements.electronBandOutput.hidden = !state.showElectrons;
   if (state.showElectrons) {
     const bandCounts = fieldProbes.bandCounts;
