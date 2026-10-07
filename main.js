@@ -162,6 +162,7 @@ const elements = {
   ),
   appShell: document.querySelector("#appShell"),
   canvas: document.querySelector("#scene"),
+  rendererStatus: document.querySelector("#rendererStatus"),
   simStage: document.querySelector(".sim-stage"),
   cltInput: document.querySelector("#cltInput"),
   mBandInput: document.querySelector("#mBandInput"),
@@ -234,9 +235,12 @@ const renderer = new THREE.WebGLRenderer({
   canvas: elements.canvas,
   antialias: true,
   alpha: true,
-  preserveDrawingBuffer: true,
 });
-renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+let graphicsInterrupted = false;
+let pixelRatioLimit = 1.5;
+// Limit the drawing buffer, especially on mobile and high-density screens.
+const MAX_RENDER_PIXELS = 2_000_000;
+renderer.setPixelRatio(1);
 renderer.outputColorSpace = THREE.SRGBColorSpace;
 
 const controls = new OrbitControls(camera, elements.canvas);
@@ -378,7 +382,21 @@ resize();
 window.addEventListener("resize", resize);
 
 const clock = new THREE.Clock();
+elements.canvas.addEventListener("webglcontextlost", (event) => {
+  event.preventDefault();
+  graphicsInterrupted = true;
+  pixelRatioLimit = 1;
+  elements.rendererStatus.hidden = false;
+});
+elements.canvas.addEventListener("webglcontextrestored", () => {
+  resize();
+  // Discard time spent recovering rather than advancing the simulation.
+  clock.getDelta();
+  graphicsInterrupted = false;
+  elements.rendererStatus.hidden = true;
+});
 renderer.setAnimationLoop(() => {
+  if (graphicsInterrupted) return;
   const delta = Math.min(clock.getDelta(), 0.05);
   advanceSimulation(state.paused ? 0 : delta);
   updateViewerFieldReadout();
@@ -779,14 +797,14 @@ function createFemaleModel() {
     roughness: 0.32,
     metalness: 0.55,
   });
-  const lensMaterial = new THREE.MeshPhysicalMaterial({
-    color: 0xffffff,
-    roughness: 0.05,
-    transmission: 0.95,
-    thickness: 0.0006,
-    ior: 1.45,
+  // Thin clear lenses do not need a full-scene transmission render target.
+  // Alpha blending keeps the eyes visible without multisampled float buffers.
+  const lensMaterial = new THREE.MeshPhongMaterial({
+    color: 0xeaf6ff,
+    specular: 0xffffff,
+    shininess: 100,
     transparent: true,
-    opacity: 0.22,
+    opacity: 0.09,
     depthWrite: false,
     side: THREE.DoubleSide,
   });
@@ -1809,6 +1827,15 @@ function resize() {
   const rect = elements.canvas.getBoundingClientRect();
   const width = Math.max(1, Math.floor(rect.width));
   const height = Math.max(1, Math.floor(rect.height));
+  const maxDimension = renderer.capabilities.maxTextureSize;
+  const pixelRatio = Math.min(
+    window.devicePixelRatio || 1,
+    pixelRatioLimit,
+    Math.sqrt(MAX_RENDER_PIXELS / (width * height)),
+    maxDimension / width,
+    maxDimension / height,
+  );
+  renderer.setPixelRatio(pixelRatio);
   renderer.setSize(width, height, false);
   camera.aspect = width / height;
   camera.updateProjectionMatrix();

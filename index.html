@@ -35,6 +35,11 @@
           </div>
         </div>
         <canvas id="scene" aria-label="3D CLT field visualization"></canvas>
+        <div id="rendererStatus" class="renderer-status" role="status" aria-live="polite" hidden>
+          <strong>Restoring the 3D viewer…</strong>
+          <p>If it stays blank, reload the viewer to reconnect.</p>
+          <button id="reloadViewerButton" type="button">Reload viewer</button>
+        </div>
         <section id="electronInspector" class="electron-inspector" aria-labelledby="electronDetailTitle" hidden>
           <div class="inspector-heading"><strong id="electronDetailTitle">Electron</strong><button id="clearElectronButton" class="icon-button" type="button" aria-label="Close electron details">×</button></div>
           <dl class="inspector-grid">
@@ -281,6 +286,15 @@
       </aside>
     </main>
 
-    <script type="module" src="./main.js"></script>
+    <script type="module">
+      document.getElementById("reloadViewerButton").addEventListener("click", () => location.reload());
+      import("./main.js").catch((error) => {
+        const status = document.getElementById("rendererStatus");
+        status.querySelector("strong").textContent = "The 3D viewer could not start.";
+        status.querySelector("p").textContent = "Reload the viewer to try again.";
+        status.hidden = false;
+        console.error("Unable to start the 3D viewer:", error);
+      });
+    </script>
   </body>
 </html>
