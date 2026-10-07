@@ -284,13 +284,7 @@ export class FieldProbes {
     const center = source?.center ?? this.center;
     const radius = source?.radius ?? this.radius;
     const orientation = source?.orientation ?? this.orientation;
-    initializeFieldParticle(particle, center, radius, orientation, this.speed, Math.random, {
-      intensity: source?.intensity ?? 1,
-      angularSpeed: source?.angularSpeed ?? 0,
-      spinAxis: source?.spinAxis ?? this.spinAxis,
-      attraction: this.attraction,
-      inflow: this.inflow,
-    });
+    initializeFieldParticle(particle, center, radius, orientation, this.speed);
     if (replacement) {
       placeIncomingReplacement(particle, center, radius, orientation);
       this.replacements += 1;

@@ -4,7 +4,6 @@ import {
   particleBand,
   transformFieldVector,
   sampleDipoleField,
-  BAND_MULTIPLIERS,
 } from "./field-lines.mjs";
 
 export const CHARGE_TO_MASS = -5;
@@ -63,8 +62,8 @@ export function relaxCaptureEnergy(velocity, rate, bindingDepth, radius, dt, tan
   const speed2 = velocity.reduce((sum, v) => sum + v * v, 0);
   const target2 = Math.max(0.02 * radius ** 2, 1.2 * bindingDepth);
   if (rate <= 0 || speed2 <= target2) return;
-  // Keep bounded azimuthal momentum: cooling an otherwise circulating ring
-  // drains its support and causes artificial inward collapse, especially at MH.
+  // Keep bounded azimuthal momentum: cooling otherwise circulating particles
+  // drains their support and causes artificial inward collapse, especially at MH.
   const orbital = tangent ? Math.max(-4 * radius, Math.min(4 * radius,
     velocity.reduce((sum, v, j) => sum + v * tangent[j], 0))) : 0;
   const residual2 = velocity.reduce((sum, v, j) =>
@@ -92,26 +91,6 @@ function particleTangent(p, center) {
   for (let j = 0; j < 3; j++) tangent[j] /= norm;
   return tangent;
 }
-const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5].map((band) => ({
-  band,
-  inverseWidth2: 1 / (0.11 + band * 0.12) ** 2,
-  inverseHeight2: 1 / (0.75 + band * 0.2) ** 2,
-  gain: 1.5 / Math.sqrt(1 + band),
-}));
-
-function transportRing(shell) {
-  for (let i = 0; i < ATTRACTING_BANDS.length - 1; i++) {
-    const a = ATTRACTING_BANDS[i].band, b = ATTRACTING_BANDS[i + 1].band;
-    const midpoint = (a + b) / 2, width = (b - a) * 0.15;
-    if (shell < midpoint - width) return a;
-    if (shell < midpoint + width) {
-      const t = (shell - midpoint + width) / (2 * width);
-      return a + (b - a) * t * t * (3 - 2 * t);
-    }
-  }
-  return ATTRACTING_BANDS.at(-1).band;
-}
-
 // Smooth finite current source and external dipole, shared with the rendered
 // flux lines. B and its first derivative are continuous at the source surface.
 // B at the M-band equator equals intensity in display units.
@@ -228,7 +207,6 @@ export function initializeFieldParticle(
   orientation,
   speed,
   random = Math.random,
-  launch = {},
 ) {
   for (const key of [
     "position",
@@ -267,51 +245,42 @@ export function initializeFieldParticle(
   p.magneticMoment = 0;
   p.pitch = 0;
   p.substeps = 1;
-  // Seed rings evenly with independent azimuths and a finite thickness. This is
-  // an initial condition only: no assigned band constrains subsequent motion.
-  const band = BAND_MULTIPLIERS[1 + Math.floor(random() * 7)];
-  const phi = random() * Math.PI * 2;
-  const rho = radius * band * (0.9 + random() * 0.08);
-  const height = radius * (0.025 + band * 0.035) * (random() * 2 - 1);
-  transformFieldVector([Math.cos(phi) * rho, height, Math.sin(phi) * rho], orientation, p.scratch);
-  for (let j = 0; j < 3; j++) p.position[j] = center[j] + p.scratch[j];
+  p.captureAge = 0;
+  p.transportResponse = 1;
+  // Random volume samples have no preferred band radius or equatorial plane.
+  const inner = SOURCE_RADIUS * 1.1;
+  const outer = Math.max(inner * 1.1, radius * MH_MULTIPLIER * 0.9);
+  const distance = Math.cbrt(inner ** 3 + random() * (outer ** 3 - inner ** 3));
+  randomDirection(random, p.scratch);
+  transformFieldVector(p.scratch, orientation, p.scratch);
+  for (let j = 0; j < 3; j++) p.position[j] = center[j] + p.scratch[j] * distance;
   transformFieldVector([0, 1, 0], orientation, p.moment);
-  const intensity = launch.intensity ?? 1;
-  sampleMagneticField(p.position, center, p.moment, radius, intensity, p.field);
-  sampleElectricMotion(p.position, center, radius, intensity, launch.angularSpeed ?? 0,
-    launch.spinAxis ?? p.moment, p.acceleration, p.flow, launch.attraction ?? 2,
-    p.moment, launch.inflow ?? 1);
-  const radial = transformFieldVector([Math.cos(phi), 0, Math.sin(phi)], orientation);
-  const tangent = transformFieldVector([-Math.sin(phi), 0, Math.cos(phi)], orientation);
-  const dot = (a, b) => a.reduce((sum, v, j) => sum + v * b[j], 0);
-  const magnetic = CHARGE_TO_MASS * dot(p.field, p.moment);
-  const radialForce = dot(p.acceleration, radial);
-  const tangentialFlow = dot(p.flow, tangent);
-  const linear = magnetic * rho;
-  const constant = rho * (radialForce + magnetic * tangentialFlow);
-  const discriminant = linear * linear - 4 * constant;
-  let orbitalSpeed;
-  if (discriminant >= 0 && intensity > 0) {
-    // The slow circular branch balances electric, magnetic and centrifugal
-    // forces. Use the product of roots to avoid cancellation at strong B.
-    const fast = (linear + (linear >= 0 ? 1 : -1) * Math.sqrt(discriminant)) / 2;
-    orbitalSpeed = Math.abs(fast) > 1e-12 ? constant / fast : 0;
-  } else orbitalSpeed = tangentialFlow;
-  if (intensity <= 0) orbitalSpeed = populationSpeed(radius, rho, 1, p.speedSpread);
-  orbitalSpeed *= speed * (0.92 + random() * 0.16);
-  const thermal = Math.max(Math.abs(orbitalSpeed) * 0.08, radius * 0.015);
-  const radialSpeed = (random() * 2 - 1) * thermal;
-  const parallelSpeed = (random() * 2 - 1) * thermal;
+  sampleMagneticField(p.position, center, p.moment, radius, 1, p.field);
+  const magnitude = Math.hypot(...p.field) || 1;
+  for (let j = 0; j < 3; j++) p.field[j] /= magnitude;
+  const [bx, by, bz] = p.field;
+  const nx = Math.abs(by) < 0.9 ? bz : by,
+    ny = Math.abs(by) < 0.9 ? 0 : -bx,
+    nz = Math.abs(by) < 0.9 ? -bx : 0;
+  const norm = Math.hypot(nx, ny, nz) || 1;
+  const n = [nx / norm, ny / norm, nz / norm];
+  const w = [by * n[2] - bz * n[1], bz * n[0] - bx * n[2], bx * n[1] - by * n[0]];
+  const angle = random() * Math.PI * 2;
+  const pitch = 0.3 + random() * 1.15;
+  const parallel = (random() < 0.5 ? -1 : 1) * Math.cos(pitch);
+  const velocity = populationSpeed(radius, distance, speed, p.speedSpread);
   for (let j = 0; j < 3; j++)
-    p.velocity[j] = orbitalSpeed * tangent[j] + radialSpeed * radial[j] + parallelSpeed * p.moment[j];
+    p.velocity[j] = velocity * (parallel * p.field[j] +
+      Math.sin(pitch) * (Math.cos(angle) * n[j] + Math.sin(angle) * w[j]));
 }
 
 export function placeIncomingReplacement(p, center, radius, orientation) {
   const random = p.random || Math.random;
   // Different dipole footpoints feed different loops: L = r / sin²(theta).
-  // A narrow axial cap sends nearly every replacement into the same CE trap.
-  const shell = Math.max(reentryRadius(radius) * 2,
-    radius * BAND_MULTIPLIERS[1 + Math.floor(random() * 7)] * (0.9 + random() * 0.08));
+  // Continuous footpoints avoid crowding replacements onto the same loops.
+  const innerShell = Math.max(reentryRadius(radius) * 2, radius * 0.4);
+  const outerShell = Math.max(innerShell * 1.1, radius * MH_MULTIPLIER * 0.95);
+  const shell = innerShell + random() * (outerShell - innerShell);
   const cosine = Math.sqrt(1 - reentryRadius(radius) / shell);
   const sign = random() < 0.5 ? -1 : 1;
   const phi = random() * Math.PI * 2;
@@ -369,34 +338,13 @@ export function sampleElectricMotion(
   acceleration[0] = -x * capture;
   acceleration[1] = -y * capture;
   acceleration[2] = -z * capture;
-  // Smooth electric potential wells, not magnetic attraction or scripted moves.
-  // Ring wells pull toward neighbouring bands; softened pole wells act locally.
-  const parallel =
-    x * magneticAxis[0] + y * magneticAxis[1] + z * magneticAxis[2];
+  // Local softened pole attraction has no fixed cylindrical-band wells.
+  const parallel = x * magneticAxis[0] + y * magneticAxis[1] + z * magneticAxis[2];
   const px = x - parallel * magneticAxis[0],
     py = y - parallel * magneticAxis[1],
     pz = z - parallel * magneticAxis[2];
-  const rho = Math.hypot(px, py, pz),
-    q = rho / radius,
-    axial = parallel / radius;
-  let radialForce = 0,
-    axialForce = 0;
-  for (const {
-    band,
-    inverseWidth2,
-    inverseHeight2,
-    gain,
-  } of ATTRACTING_BANDS) {
-    const difference = q - band;
-    const exponent =
-      (difference * difference * inverseWidth2 +
-        axial * axial * inverseHeight2) /
-      2;
-    if (exponent > 12) continue;
-    const well = gain * strength * radius * Math.exp(-exponent);
-    radialForce -= well * difference * inverseWidth2;
-    axialForce -= well * axial * inverseHeight2;
-  }
+  const rho = Math.hypot(px, py, pz);
+  let radialForce = 0, axialForce = 0;
   const poleWidth = 0.18 + Math.min(0.12, radius * 0.01);
   for (let sign = -1; sign <= 1; sign += 2) {
     const poleParallel = parallel - sign * SOURCE_RADIUS;
@@ -426,22 +374,9 @@ export function sampleElectricMotion(
       distance2) /
     (distance2 + SOURCE_RADIUS ** 2) /
     (1 + ratio2 * ratio2);
-  // Capturing plasma transport settles around the nearest ring instead of
-  // flowing through every ring to the axis forever. Far away it remains inward.
-  let transport = 1;
-  const distance = Math.sqrt(distance2);
-  // Exterior dipole L labels an entire loop, including its polar legs. Using
-  // perpendicular distance alone mistakes every polar entrant for CE.
-  const u = distance2 / SOURCE_RADIUS ** 2;
-  const fluxScale = distance >= SOURCE_RADIUS ? distance ** 3 :
-    SOURCE_RADIUS ** 3 / (35 / 8 - 21 * u / 4 + 15 * u * u / 8);
-  const shell = rho > 1e-9 ? fluxScale / (rho * rho * radius) : Infinity;
-  if (Number.isFinite(shell) && shell > 1e-9 && attraction > 0)
-    transport -= Math.min(1, attraction) * transportRing(shell) / shell /
-      (1 + (shell / CAPTURE_RANGE) ** 8);
-  flow[0] -= inflowRate * transport * x;
-  flow[1] -= inflowRate * transport * y;
-  flow[2] -= inflowRate * transport * z;
+  flow[0] -= inflowRate * x;
+  flow[1] -= inflowRate * y;
+  flow[2] -= inflowRate * z;
 }
 
 function scatterVelocity(p, dt, intensity) {
@@ -519,7 +454,7 @@ function sampleParticleElectric(
       p.flow,
       p.attraction ?? 1,
       p.moment,
-      p.inflow ?? 0,
+      (p.inflow ?? 0) * (p.transportResponse ?? 1),
     );
   p.bindingDepth = environment
     ? environment.bindingDepth(position, p.attraction ?? 1)
@@ -575,6 +510,11 @@ export function advanceFieldParticle(
     advanceElectron(p.position, p.velocity, [0, 0, 0], dt);
     return;
   }
+  // Capture transport is transient. Continuing to compress already captured
+  // particles indefinitely creates a numerical pileup at the magnetic axis.
+  p.captureAge = p.phase === "captured"
+    ? (p.captureAge || 0) + dt : Math.max(0, (p.captureAge || 0) - dt);
+  p.transportResponse = (p.attraction ?? 1) > 0 ? Math.exp(-p.captureAge / 0.35) : 1;
   sampleParticleField(p, p.position, center, radius, intensity, environment);
   const speed = Math.hypot(...p.velocity),
     fieldStrength = Math.hypot(...p.field);

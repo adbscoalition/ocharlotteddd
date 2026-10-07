@@ -193,27 +193,18 @@ test("visible curve tangents align with the same B sampled by electrons and comp
     }
 });
 
-test("initial particles occupy multiple thick rings with azimuthal launch motion", () => {
-  const rand = seeded(),
-    ps = Array.from({ length: 200 }, () => {
-      const p = {};
-      initializeFieldParticle(p, center, 4, identity, 1, rand,
-        { intensity: 1, angularSpeed: 12, attraction: 2, inflow: 1 });
-      return p;
-    });
-  const radii = ps.map((p) => Math.hypot(...p.position));
-  assert.ok(new Set(radii.map((r) => r.toFixed(3))).size > 180);
-  assert.ok(
-    ps.filter(
-      (p) => Math.hypot(p.position[0], p.position[2]) > Math.abs(p.position[1]),
-    ).length > 90,
-  );
-  assert.ok(
-    ps.every((p) => p.position.concat(p.velocity).every(Number.isFinite)),
-  );
-  const bands = new Set(ps.map(p => particleBand(p.position, center, moment, 4)));
-  assert.equal(bands.size, 7);
-  assert.ok(ps.every(p => Math.abs(p.position[0] * p.velocity[2] - p.position[2] * p.velocity[0]) > 0.001));
+test("initial electrons fill three-dimensional space without a preferred ring plane", () => {
+  const random = seeded(), particles = Array.from({ length: 1000 }, () => fresh(random));
+  const secondMoments = [0, 0, 0], histogram = Array(24).fill(0);
+  for (const p of particles) {
+    const distance = Math.hypot(...p.position);
+    p.position.forEach((v, j) => secondMoments[j] += (v / distance) ** 2 / particles.length);
+    histogram[Math.min(23, Math.floor(distance / (4 * 6.5) * 24))]++;
+    assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
+  }
+  secondMoments.forEach(v => assert.ok(v > 0.28 && v < 0.38, `Angular second moment ${v}`));
+  assert.ok(Math.max(...histogram) < particles.length * 0.2);
+  assert.ok(new Set(particles.map(p => Math.hypot(...p.position).toFixed(3))).size > 900);
 });
 test("inner population speeds exceed outer speeds without magnetic work", () => {
   const speeds = [0.2, 1, 3, 6].map((d) => populationSpeed(4, d * 4));
@@ -331,13 +322,11 @@ test("magnetic mirror bouncing emerges from the Lorentz solver without prescribe
   assert.ok(maxY < 1.2);
   near(Math.hypot(...p.velocity), Math.hypot(5.2, 3), 1e-8);
 });
-test("field strength increases the captured population", () => {
+test("stronger magnetic fields capture more of the same freely moving ensemble", () => {
   const run = (I) => {
     const rand = seeded();
     const ps = Array.from({ length: 64 }, () => fresh(rand));
-    // Compare the same energetic incoming ensemble, independently of the
-    // strength-specific circular launch conditions used for resident rings.
-    for (const p of ps) p.velocity = p.velocity.map(v => v * 10);
+    for (const p of ps) p.electricCoupling = 0;
     for (const p of ps) evolve(p, I, 2);
     return ps.filter((p) => p.phase === "captured").length;
   };
@@ -441,11 +430,11 @@ test("tight gyromotion retains the exact phase and displacement at arbitrary fie
     near(p[2], 0.5 * dt);
   }
 });
-test("band and pole wells attract gradually from both sides without position changes", () => {
+test("broad attraction and pole wells act continuously without cylindrical band basins", () => {
   for (const [p, j, sign] of [
-    [[3.5, 0, 0], 0, 1],
+    [[3.5, 0, 0], 0, -1],
     [[4.3, 0, 0], 0, -1],
-    [[6.2, 0, 0], 0, 1],
+    [[6.2, 0, 0], 0, -1],
     [[7.5, 0, 0], 0, -1],
     [[0, 0.6, 0], 1, 1],
     [[0, 1, 0], 1, -1],
@@ -474,7 +463,7 @@ test("attraction control scales electric capture and can disable it", () => {
   }
 });
 
-test("polar injection spans flux shells and launches out along loops with orbital pitch", () => {
+test("polar injection samples continuous flux loops with varied orbital pitch", () => {
   const rand = seeded(312),
     mean = [0, 0, 0],
     octants = new Set();
@@ -514,7 +503,7 @@ test("outward replacement recycling has room to travel beyond the spawn shell", 
   assert.equal(outsideReplacementBoundary([54, 1, -3], [2, 1, -3], 4), false);
 });
 
-test("ring transport scales with RPM and gain, vanishes without a source, and leaves trapping independent", () => {
+test("capture transport scales with RPM and gain, vanishes without a source, and leaves trapping independent", () => {
   const sample = (omega, I, gain) => {
     const a = [0, 0, 0],
       u = [0, 0, 0];
@@ -743,22 +732,6 @@ test("weak rotating fields can retain electrons injected from both poles", () =>
   assert.ok(particles.filter(p => Math.hypot(...p.position) < 6.5 * radius).length >= 28);
 });
 
-test("resident rings launch close to circular force balance in the actual source", () => {
-  for (const intensity of [0.02, 1, 10]) {
-    const p = {};
-    initializeFieldParticle(p, center, 4, identity, 1, () => 0.5,
-      { intensity, angularSpeed: 12, attraction: 2, inflow: 1 });
-    const rho = Math.hypot(p.position[0], p.position[2]);
-    const radial = p.position.map(v => v / rho);
-    const a = [0, 0, 0], u = [0, 0, 0], b = sampleMagneticField(p.position, center, moment, 4, intensity);
-    sampleElectricMotion(p.position, center, 4, intensity, 12, moment, a, u, 2, moment, 1);
-    const relative = p.velocity.map((v, j) => v - u[j]);
-    const cross = [relative[1] * b[2] - relative[2] * b[1], relative[2] * b[0] - relative[0] * b[2], relative[0] * b[1] - relative[1] * b[0]];
-    const radialForce = a.reduce((sum, v, j) => sum + (v - 5 * cross[j]) * radial[j], 0);
-    near(radialForce, -p.velocity.reduce((sum, v) => sum + v * v, 0) / rho, 1e-8);
-  }
-});
-
 test("capture cooling preserves bounded orbital momentum while relaxing radial energy", () => {
   const v = [5, 0, 3];
   relaxCaptureEnergy(v, 2, 1, 1, 0.5, [0, 0, 1]);
@@ -772,36 +745,37 @@ test("capture cooling preserves bounded orbital momentum while relaxing radial e
   assert.ok(energetic[2] < 20 && energetic[2] > 4);
 });
 
-test("ring transport is smooth and does not drain settled flux loops toward CE", () => {
-  const flow = position => {
-    const a = [0, 0, 0], u = [0, 0, 0], baseline = [0, 0, 0];
-    sampleElectricMotion(position, center, 4, 1, 12, moment, a, u, 2, moment, 1);
-    sampleElectricMotion(position, center, 4, 1, 12, moment, a, baseline, 2, moment, 0);
-    return u.map((v, j) => v - baseline[j]);
-  };
-  for (const band of [0.2, 0.5, 1, 1.7, 3.5, 4.5]) {
-    const at = flow([4 * band, 0, 0]);
-    assert.ok(Math.hypot(...at) < 0.002);
-    assert.ok(flow([4 * band * 0.95, 0, 0])[0] > 0);
-    assert.ok(flow([4 * band * 1.05, 0, 0])[0] < 0);
-  }
-  for (const x of [0, 0.72, 1.4, 3, 5.4, 10.4, 16, 22]) {
-    const a = flow([x - 1e-7, 0.1, 0]), b = flow([x + 1e-7, 0.1, 0]);
-    assert.ok(a.concat(b).every(Number.isFinite));
-    assert.ok(Math.hypot(...a.map((v, j) => v - b[j])) < 1e-5);
-  }
-  const nearAxis = flow([1e-8, 0.5, 0]), onAxis = flow([0, 0.5, 0]);
-  assert.ok(Math.hypot(...nearAxis.map((v, j) => v - onAxis[j])) < 1e-6);
+test("captured inflow fades while free capture response and rotation remain available", () => {
+  const p = fresh(); p.attraction = 2; p.inflow = 1;
+  p.position = [4, 0, 0]; p.velocity = [0, 0, -1];
+  evolve(p, 10, 3, 4, 120);
+  assert.equal(p.phase, "captured");
+  assert.ok(p.transportResponse < 0.001);
+  assert.ok(Math.hypot(...p.velocity) > 0.1);
+  const lastPosition = [...p.position];
+  p.attraction = 0;
+  advanceFieldParticle(p, center, 4, 10, identity, 12, 1 / 120);
+  assert.equal(p.transportResponse, 1);
+  assert.ok(Math.hypot(...p.position.map((v,j) => v-lastPosition[j])) < 0.2);
 });
 
-test("resident and polar-injected ensembles keep moving across several bands over a minute", () => {
+test("capture force remains smooth through all band readout boundaries", () => {
+  for (const distance of [0.045, 0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5]) {
+    const a = [0,0,0], b = [0,0,0], u = [0,0,0];
+    sampleElectricMotion([4*distance-1e-7,0,0],center,4,1,12,moment,a,u,2,moment,1);
+    sampleElectricMotion([4*distance+1e-7,0,0],center,4,1,12,moment,b,u,2,moment,1);
+    assert.ok(a[0] < 0 && b[0] < 0);
+    assert.ok(Math.hypot(...a.map((v,j)=>v-b[j])) < 1e-5);
+  }
+});
+
+test("free-volume and polar-injected populations avoid CE pileup while staying in motion", () => {
   const radius = 4.107028973825681, intensity = 1, omega = 120 * Math.PI / 30;
   for (const replacement of [false, true]) {
     const random = seeded(42);
     const particles = Array.from({ length: 48 }, () => {
       const p = {};
-      initializeFieldParticle(p, center, radius, identity, 1, random,
-        { intensity, angularSpeed: omega, attraction: 2, inflow: 1 });
+      initializeFieldParticle(p, center, radius, identity, 1, random);
       if (replacement) placeIncomingReplacement(p, center, radius, identity);
       p.attraction = 2; p.inflow = 1;
       return p;
@@ -816,7 +790,7 @@ test("resident and polar-injected ensembles keep moving across several bands ove
       }
     }
     const bands = particles.map(p => particleBand(p.position, center, moment, radius));
-    assert.ok(bands.filter(b => b === 1).length < particles.length * 0.45, `CE crowding after polar=${replacement}: ${bands}`);
+    assert.ok(bands.filter(b => b === 1).length < particles.length * 0.15, `CE crowding after polar=${replacement}: ${bands}`);
     assert.ok(new Set(bands).size >= 4);
     assert.ok(bands.filter(b => b >= 3 && b <= 7).length >= particles.length * 0.35);
     assert.ok(turns.filter(t => Math.abs(t) > Math.PI / 2).length >= particles.length * 0.75);

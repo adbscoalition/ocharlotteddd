@@ -282,7 +282,7 @@ export class FieldSystem {
       flow,
       work,
       work.sourceFields,
-      this.inflow,
+      this.inflow * (work.transportResponse ?? 1),
     );
   }
   contains(position) {
