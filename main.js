@@ -1,18 +1,78 @@
 import * as THREE from "three";
 import { OrbitControls } from "./OrbitControls.js";
 import { FieldProbes } from "./field-probes.js";
-import { sampleFieldLine } from "./field-lines.mjs";
+import {
+  sampleFieldLine,
+  sampleDipoleField,
+  POLE_DISTANCE,
+} from "./field-lines.mjs";
 import { reentryRadius, reentrySpeed } from "./electron-physics.mjs";
 
 const BAND_CONFIG = [
-  { id: "ns", label: "NS", name: "Polar", multiplier: 0.045, color: "#ff2f2f", opacity: 0.78 },
-  { id: "ce", label: "CE", name: "Central Extreme", multiplier: 0.2, color: "#ff8a1c", opacity: 0.7 },
-  { id: "e", label: "E", name: "Extreme", multiplier: 0.5, color: "#ffd84d", opacity: 0.62 },
-  { id: "m", label: "M", name: "Maximum", multiplier: 1, color: "#45df75", opacity: 0.72 },
-  { id: "ps", label: "PS", name: "Plasmasphere", multiplier: 1.7, color: "#37e1ea", opacity: 0.5 },
-  { id: "ms", label: "MS", name: "Magnetosphere", multiplier: 3.5, color: "#3e7bff", opacity: 0.42 },
-  { id: "mp", label: "MP", name: "Magnetopause", multiplier: 4.5, color: "#a75cff", opacity: 0.36 },
-  { id: "mh", label: "MH", name: "Magnetosheath", multiplier: 6.5, color: "#35105f", opacity: 0.3 },
+  {
+    id: "ns",
+    label: "NS",
+    name: "Polar",
+    multiplier: 0.045,
+    color: "#ff2f2f",
+    opacity: 0.78,
+  },
+  {
+    id: "ce",
+    label: "CE",
+    name: "Central Extreme",
+    multiplier: 0.2,
+    color: "#ff8a1c",
+    opacity: 0.7,
+  },
+  {
+    id: "e",
+    label: "E",
+    name: "Extreme",
+    multiplier: 0.5,
+    color: "#ffd84d",
+    opacity: 0.62,
+  },
+  {
+    id: "m",
+    label: "M",
+    name: "Maximum",
+    multiplier: 1,
+    color: "#45df75",
+    opacity: 0.72,
+  },
+  {
+    id: "ps",
+    label: "PS",
+    name: "Plasmasphere",
+    multiplier: 1.7,
+    color: "#37e1ea",
+    opacity: 0.5,
+  },
+  {
+    id: "ms",
+    label: "MS",
+    name: "Magnetosphere",
+    multiplier: 3.5,
+    color: "#3e7bff",
+    opacity: 0.42,
+  },
+  {
+    id: "mp",
+    label: "MP",
+    name: "Magnetopause",
+    multiplier: 4.5,
+    color: "#a75cff",
+    opacity: 0.36,
+  },
+  {
+    id: "mh",
+    label: "MH",
+    name: "Magnetosheath",
+    multiplier: 6.5,
+    color: "#35105f",
+    opacity: 0.3,
+  },
 ];
 
 const DEFAULTS = {
@@ -22,19 +82,23 @@ const DEFAULTS = {
   flips: 0.3,
   tilt: 13,
   universalTilt: 0,
+  fieldJitter: 0,
   showElectrons: false,
   electronCount: 1600,
   electronSpeed: 1,
+  electronAttraction: 2,
   electronTrails: false,
   showCompasses: false,
   showFieldLines: true,
 };
 
-const FIELD_CENTER_Y = 0.82;
+const HUMAN_HEIGHT = 1.68;
+// Anatomical left chest. Every field transform, force and distance uses this
+// same heart anchor; the upright model is separate from magnetic transforms.
+const FIELD_CENTER = new THREE.Vector3(0.055, 1.24, 0.045);
 const MIN_CAMERA_RADIUS = 5.5;
 const VISUAL_ROTATION_GAIN = 1;
 const FIELD_Y_SCALE = 1;
-const POLE_DISTANCE = 0.72;
 const DUST_COUNT = 420;
 
 const elements = {
@@ -54,11 +118,15 @@ const elements = {
   tiltInput: document.querySelector("#tiltInput"),
   universalTiltRange: document.querySelector("#universalTiltRange"),
   universalTiltInput: document.querySelector("#universalTiltInput"),
+  jitterRange: document.querySelector("#jitterRange"),
+  jitterInput: document.querySelector("#jitterInput"),
   electronsToggle: document.querySelector("#electronsToggle"),
   electronCountRange: document.querySelector("#electronCountRange"),
   electronCountOutput: document.querySelector("#electronCountOutput"),
   electronSpeedRange: document.querySelector("#electronSpeedRange"),
   electronSpeedOutput: document.querySelector("#electronSpeedOutput"),
+  electronAttractionRange: document.querySelector("#electronAttractionRange"),
+  electronAttractionOutput: document.querySelector("#electronAttractionOutput"),
   electronTrailsToggle: document.querySelector("#electronTrailsToggle"),
   electronStateOutput: document.querySelector("#electronStateOutput"),
   electronBandOutput: document.querySelector("#electronBandOutput"),
@@ -110,13 +178,15 @@ controls.enableDamping = true;
 controls.dampingFactor = 0.07;
 controls.minDistance = 1.9;
 controls.maxDistance = 14;
-controls.target.set(0, FIELD_CENTER_Y, 0);
+controls.target.copy(FIELD_CENTER);
 
 // Tilt the whole field about its center, before local spin and polarity flips.
 const universalTiltGroup = new THREE.Group();
-universalTiltGroup.position.y = FIELD_CENTER_Y;
+universalTiltGroup.position.copy(FIELD_CENTER);
 scene.add(universalTiltGroup);
 
+const jitterGroup = new THREE.Group();
+universalTiltGroup.add(jitterGroup);
 const fieldGroup = new THREE.Group();
 const flipGroup = new THREE.Group();
 const lineGroup = new THREE.Group();
@@ -125,18 +195,26 @@ const tracerGroup = new THREE.Group();
 const vfxGroup = new THREE.Group();
 fieldGroup.add(flipGroup);
 flipGroup.add(shellGroup, lineGroup, tracerGroup, vfxGroup);
-universalTiltGroup.add(fieldGroup);
+jitterGroup.add(fieldGroup);
 
 const modelGroup = createFemaleModel();
 scene.add(modelGroup);
 
 const capNorth = new THREE.Mesh(
   new THREE.SphereGeometry(0.055, 24, 16),
-  new THREE.MeshStandardMaterial({ color: 0xff3a3a, emissive: 0x5a0505, roughness: 0.5 }),
+  new THREE.MeshStandardMaterial({
+    color: 0xff3a3a,
+    emissive: 0x5a0505,
+    roughness: 0.5,
+  }),
 );
 const capSouth = new THREE.Mesh(
   new THREE.SphereGeometry(0.055, 24, 16),
-  new THREE.MeshStandardMaterial({ color: 0x4f83ff, emissive: 0x071d58, roughness: 0.5 }),
+  new THREE.MeshStandardMaterial({
+    color: 0x4f83ff,
+    emissive: 0x071d58,
+    roughness: 0.5,
+  }),
 );
 flipGroup.add(capNorth, capSouth);
 
@@ -180,7 +258,7 @@ grid.material.transparent = true;
 grid.material.opacity = 0.11;
 scene.add(grid);
 
-const fieldProbes = new FieldProbes(scene, [0, FIELD_CENTER_Y, 0]);
+const fieldProbes = new FieldProbes(scene, FIELD_CENTER.toArray());
 const fieldAxis = new THREE.Vector3();
 const fieldSpinAxis = new THREE.Vector3();
 const fieldOrientation = new THREE.Quaternion();
@@ -197,8 +275,10 @@ const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const delta = Math.min(clock.getDelta(), 0.05);
   const elapsed = clock.elapsedTime;
-  const radiansPerSecond = ((state.rpm * Math.PI * 2) / 60) * VISUAL_ROTATION_GAIN;
+  const radiansPerSecond =
+    ((state.rpm * Math.PI * 2) / 60) * VISUAL_ROTATION_GAIN;
   fieldGroup.rotation.y += radiansPerSecond * delta;
+  updateFieldJitter(elapsed);
 
   updateFlipRotation(elapsed);
   updatePolarity(elapsed);
@@ -206,9 +286,16 @@ renderer.setAnimationLoop(() => {
   if (state.showElectrons || state.showCompasses) {
     flipGroup.getWorldQuaternion(fieldOrientation);
     fieldAxis.set(0, 1, 0).applyQuaternion(fieldOrientation);
-    universalTiltGroup.getWorldQuaternion(spinOrientation);
+    jitterGroup.getWorldQuaternion(spinOrientation);
     fieldSpinAxis.set(0, 1, 0).applyQuaternion(spinOrientation);
-    fieldProbes.update(delta, fieldAxis, state.clt / 1000, fieldSpinAxis, radiansPerSecond, fieldOrientation);
+    fieldProbes.update(
+      delta,
+      fieldAxis,
+      state.clt / 1000,
+      fieldSpinAxis,
+      radiansPerSecond,
+      fieldOrientation,
+    );
     updateElectronStateReadout();
   }
   updateViewerFieldReadout();
@@ -218,105 +305,227 @@ renderer.setAnimationLoop(() => {
 
 function createFemaleModel() {
   const group = new THREE.Group();
-  const skin = new THREE.MeshStandardMaterial({ color: 0xd4a077, roughness: 0.7 });
-  const hair = new THREE.MeshStandardMaterial({ color: 0x1f1510, roughness: 0.6 });
-  const top = new THREE.MeshStandardMaterial({ color: 0x334c44, roughness: 0.58 });
-  const skirtMat = new THREE.MeshStandardMaterial({ color: 0x8a3f63, roughness: 0.62 });
-  const dark = new THREE.MeshStandardMaterial({ color: 0x171615, roughness: 0.66 });
-
-  const hips = new THREE.Mesh(new THREE.SphereGeometry(0.18, 32, 18), skirtMat);
-  hips.scale.set(1.28, 0.55, 0.72);
-  hips.position.y = 0.76;
-  group.add(hips);
-
-  const waist = new THREE.Mesh(new THREE.CapsuleGeometry(0.115, 0.16, 8, 24), top);
-  waist.scale.set(0.92, 1, 0.72);
-  waist.position.y = 0.92;
-  group.add(waist);
-
-  const torso = new THREE.Mesh(new THREE.CapsuleGeometry(0.145, 0.34, 10, 32), top);
-  torso.scale.set(1.05, 1, 0.68);
-  torso.position.y = 1.07;
-  group.add(torso);
-
-  const shoulder = new THREE.Mesh(new THREE.CapsuleGeometry(0.035, 0.42, 6, 18), top);
-  shoulder.rotation.z = Math.PI / 2;
-  shoulder.position.y = 1.23;
-  group.add(shoulder);
-
-  const skirt = new THREE.Mesh(new THREE.ConeGeometry(0.3, 0.38, 48, 1, true), skirtMat);
-  skirt.position.y = 0.72;
-  skirt.rotation.x = Math.PI;
-  group.add(skirt);
-
-  const neck = new THREE.Mesh(new THREE.CapsuleGeometry(0.045, 0.09, 6, 18), skin);
-  neck.position.y = 1.34;
-  group.add(neck);
-
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.125, 36, 24), skin);
-  head.scale.set(0.9, 1.08, 0.88);
-  head.position.y = 1.46;
-  group.add(head);
-
-  const face = new THREE.Mesh(new THREE.SphereGeometry(0.096, 32, 18), skin);
-  face.scale.set(0.9, 0.94, 0.34);
-  face.position.set(0, 1.45, 0.074);
-  group.add(face);
-
-  const hairCap = new THREE.Mesh(new THREE.SphereGeometry(0.137, 36, 20), hair);
-  hairCap.scale.set(1.02, 1.1, 0.98);
-  hairCap.position.set(0, 1.48, -0.012);
-  group.add(hairCap);
-
-  const hairBack = new THREE.Mesh(new THREE.CapsuleGeometry(0.073, 0.23, 8, 20), hair);
-  hairBack.scale.set(0.85, 1, 0.62);
-  hairBack.position.set(0, 1.36, -0.09);
-  group.add(hairBack);
-
-  const fringe = new THREE.Mesh(new THREE.SphereGeometry(0.075, 24, 14), hair);
-  fringe.scale.set(1.15, 0.48, 0.42);
-  fringe.position.set(0.035, 1.525, 0.065);
-  group.add(fringe);
-
-  addCapsule(group, { x: -0.09, y: 0.39, z: 0.015 }, 0.045, 0.62, dark, { z: 0.035 });
-  addCapsule(group, { x: 0.09, y: 0.39, z: 0.015 }, 0.045, 0.62, dark, { z: -0.035 });
-  addCapsule(group, { x: -0.28, y: 1.02, z: 0.005 }, 0.03, 0.52, skin, { z: -0.22 });
-  addCapsule(group, { x: 0.28, y: 1.02, z: 0.005 }, 0.03, 0.52, skin, { z: 0.22 });
-
-  const leftShoe = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.045, 0.22), dark);
-  leftShoe.position.set(-0.095, 0.025, 0.055);
-  group.add(leftShoe);
-
-  const rightShoe = leftShoe.clone();
-  rightShoe.position.x = 0.095;
-  group.add(rightShoe);
-
-  const rulerMaterial = new THREE.LineBasicMaterial({ color: 0xf0e6cd, transparent: true, opacity: 0.8 });
+  group.name = "female-model";
+  group.userData.heartPosition = FIELD_CENTER.toArray();
+  const skin = new THREE.MeshStandardMaterial({
+    color: 0xc99475,
+    roughness: 0.74,
+  });
+  const hair = new THREE.MeshStandardMaterial({
+    color: 0x38241f,
+    roughness: 0.72,
+  });
+  const dress = new THREE.MeshStandardMaterial({
+    color: 0x356357,
+    roughness: 0.72,
+    side: THREE.DoubleSide,
+  });
+  const trim = new THREE.MeshStandardMaterial({
+    color: 0xcab384,
+    metalness: 0.25,
+    roughness: 0.5,
+  });
+  const shoes = new THREE.MeshStandardMaterial({
+    color: 0x272b28,
+    roughness: 0.68,
+  });
+  const white = new THREE.MeshStandardMaterial({
+    color: 0xe8dccf,
+    roughness: 0.6,
+  });
+  const iris = new THREE.MeshStandardMaterial({
+    color: 0x4c6550,
+    roughness: 0.5,
+  });
+  const pupil = new THREE.MeshBasicMaterial({ color: 0x181b18 });
+  const lips = new THREE.MeshStandardMaterial({
+    color: 0xa76666,
+    roughness: 0.7,
+  });
+  const sphere = new THREE.SphereGeometry(1, 32, 24);
+  const ellipsoid = (name, material, position, scale) => {
+    const mesh = new THREE.Mesh(sphere, material);
+    mesh.name = name;
+    mesh.position.fromArray(position);
+    mesh.scale.fromArray(scale);
+    group.add(mesh);
+    return mesh;
+  };
+  const limb = (name, a, b, radius, material) => {
+    const start = new THREE.Vector3().fromArray(a),
+      end = new THREE.Vector3().fromArray(b);
+    const mesh = new THREE.Mesh(
+      new THREE.CapsuleGeometry(
+        radius,
+        Math.max(0.001, start.distanceTo(end) - 2 * radius),
+        8,
+        24,
+      ),
+      material,
+    );
+    mesh.name = name;
+    mesh.position.copy(start).add(end).multiplyScalar(0.5);
+    mesh.quaternion.setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      end.sub(start).normalize(),
+    );
+    group.add(mesh);
+    return mesh;
+  };
+  // Shaped bodice and skirt, articulated limbs, and a detailed unobscured face.
+  const profile = [
+    [0.215, 0.68],
+    [0.222, 0.7],
+    [0.195, 0.79],
+    [0.16, 0.9],
+    [0.105, 1.015],
+    [0.103, 1.06],
+    [0.124, 1.145],
+    [0.159, 1.24],
+    [0.178, 1.31],
+    [0.184, 1.34],
+    [0.11, 1.39],
+    [0.059, 1.41],
+  ];
+  const clothing = new THREE.Mesh(
+    new THREE.LatheGeometry(
+      profile.map(([r, y]) => new THREE.Vector2(r, y)),
+      64,
+    ),
+    dress,
+  );
+  clothing.scale.z = 0.66;
+  group.add(clothing);
+  const belt = new THREE.Mesh(
+    new THREE.TorusGeometry(0.106, 0.006, 8, 48),
+    trim,
+  );
+  belt.rotation.x = Math.PI / 2;
+  belt.scale.y = 0.66;
+  belt.position.y = 1.035;
+  group.add(belt);
+  ellipsoid("neck", skin, [0, 1.425, 0], [0.045, 0.076, 0.039]);
+  ellipsoid("head", skin, [0, 1.547, 0.005], [0.096, 0.119, 0.09]);
+  ellipsoid("jaw", skin, [0, 1.492, 0.013], [0.075, 0.063, 0.068]);
+  ellipsoid("nose", skin, [0, 1.535, 0.092], [0.017, 0.03, 0.025]);
+  for (const sign of [-1, 1]) {
+    ellipsoid("ear", skin, [sign * 0.095, 1.545, 0], [0.016, 0.026, 0.012]);
+    ellipsoid(
+      "eye-white",
+      white,
+      [sign * 0.034, 1.568, 0.095],
+      [0.02, 0.011, 0.006],
+    );
+    ellipsoid(
+      "iris",
+      iris,
+      [sign * 0.034, 1.568, 0.101],
+      [0.007, 0.008, 0.002],
+    );
+    ellipsoid(
+      "pupil",
+      pupil,
+      [sign * 0.034, 1.568, 0.103],
+      [0.0035, 0.005, 0.001],
+    );
+    const brow = ellipsoid(
+      "brow",
+      hair,
+      [sign * 0.035, 1.589, 0.094],
+      [0.024, 0.0035, 0.004],
+    );
+    brow.rotation.z = -sign * 0.1;
+    const shoulder = [sign * 0.177, 1.335, 0],
+      elbow = [sign * 0.23, 1.115, 0.005],
+      wrist = [sign * 0.25, 0.924, 0.025];
+    ellipsoid("shoulder", dress, shoulder, [0.057, 0.065, 0.044]);
+    limb("upper-arm", shoulder, elbow, 0.038, skin);
+    ellipsoid("elbow", skin, elbow, [0.034, 0.038, 0.032]);
+    limb("forearm", elbow, wrist, 0.029, skin);
+    ellipsoid(
+      "hand",
+      skin,
+      [sign * 0.252, 0.878, 0.029],
+      [0.027, 0.053, 0.021],
+    );
+    ellipsoid("thumb", skin, [sign * 0.224, 0.9, 0.043], [0.012, 0.027, 0.012]);
+    const hip = [sign * 0.085, 0.82, 0],
+      knee = [sign * 0.076, 0.43, 0.005],
+      ankle = [sign * 0.07, 0.065, 0];
+    limb("thigh", hip, knee, 0.056, skin);
+    ellipsoid("knee", skin, knee, [0.041, 0.048, 0.041]);
+    limb("calf", knee, ankle, 0.04, skin);
+    ellipsoid(
+      "shoe",
+      shoes,
+      [sign * 0.07, 0.035, 0.046],
+      [0.054, 0.034, 0.102],
+    );
+  }
+  ellipsoid("mouth", lips, [0, 1.498, 0.089], [0.025, 0.0045, 0.004]);
+  const crown = new THREE.Mesh(
+    new THREE.SphereGeometry(0.117, 36, 24, 0, Math.PI * 2, 0, 1.15),
+    hair,
+  );
+  crown.position.set(0, 1.548, -0.003);
+  crown.scale.set(0.99, 1.13, 1.02);
+  group.add(crown);
+  ellipsoid("hair-back", hair, [0, 1.444, -0.071], [0.098, 0.202, 0.052]);
+  for (const sign of [-1, 1]) {
+    const lock = ellipsoid(
+      "hair-side",
+      hair,
+      [sign * 0.101, 1.469, -0.008],
+      [0.026, 0.136, 0.057],
+    );
+    lock.rotation.z = sign * 0.08;
+  }
+  const part = ellipsoid(
+    "hair-part",
+    hair,
+    [-0.028, 1.638, 0.047],
+    [0.078, 0.035, 0.047],
+  );
+  part.rotation.z = 0.18;
+  // A small marker identifies the anatomical heart inside the chest.
+  const heart = new THREE.Mesh(
+    new THREE.SphereGeometry(0.012, 20, 12),
+    new THREE.MeshBasicMaterial({
+      color: 0xff8a88,
+      depthTest: false,
+      transparent: true,
+      opacity: 0.8,
+    }),
+  );
+  heart.name = "heart-source";
+  heart.position.copy(FIELD_CENTER);
+  heart.renderOrder = 3;
+  group.add(heart);
+  const rulerMaterial = new THREE.LineBasicMaterial({
+    color: 0xb4baa7,
+    transparent: true,
+    opacity: 0.45,
+  });
   const ruler = new THREE.Line(
-    new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(0.48, 0, 0), new THREE.Vector3(0.48, 1.6, 0)]),
+    new THREE.BufferGeometry().setFromPoints([
+      new THREE.Vector3(0.4, 0, 0),
+      new THREE.Vector3(0.4, HUMAN_HEIGHT, 0),
+    ]),
     rulerMaterial,
   );
   group.add(ruler);
-  [0, 0.8, 1.6].forEach((height) => {
-    const tick = new THREE.Line(
-      new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0.42, height, 0),
-        new THREE.Vector3(0.54, height, 0),
-      ]),
-      rulerMaterial,
+  for (const height of [0, HUMAN_HEIGHT / 2, HUMAN_HEIGHT]) {
+    group.add(
+      new THREE.Line(
+        new THREE.BufferGeometry().setFromPoints([
+          new THREE.Vector3(0.375, height, 0),
+          new THREE.Vector3(0.425, height, 0),
+        ]),
+        rulerMaterial,
+      ),
     );
-    group.add(tick);
-  });
-
+  }
   return group;
-}
-
-function addCapsule(group, position, radius, length, material, rotation = {}) {
-  const limb = new THREE.Mesh(new THREE.CapsuleGeometry(radius, length, 8, 18), material);
-  limb.position.set(position.x, position.y, position.z);
-  limb.rotation.set(rotation.x || 0, rotation.y || 0, rotation.z || 0);
-  group.add(limb);
-  return limb;
 }
 
 function createDustCloud() {
@@ -360,15 +569,23 @@ function updateDustCloud(radius) {
     const theta = Math.random() * Math.PI * 2;
     const y = (Math.random() - 0.5) * radius * FIELD_Y_SCALE * 1.22;
     const banding = 0.84 + Math.sin(phase * 4) * 0.16;
-    positions.setXYZ(i, Math.cos(theta) * localRadius * banding, y, Math.sin(theta) * localRadius * banding);
+    positions.setXYZ(
+      i,
+      Math.cos(theta) * localRadius * banding,
+      y,
+      Math.sin(theta) * localRadius * banding,
+    );
   }
   positions.needsUpdate = true;
   dust.points.material.size = Math.max(0.045, Math.min(0.16, radius * 0.006));
 }
 
 function updateCameraForRadius(radius) {
-  const focusRadius = Math.max(MIN_CAMERA_RADIUS, Math.min(radius, state.mBand * 1.85));
-  const target = new THREE.Vector3(0, FIELD_CENTER_Y, 0);
+  const focusRadius = Math.max(
+    MIN_CAMERA_RADIUS,
+    Math.min(radius, state.mBand * 1.85),
+  );
+  const target = FIELD_CENTER.clone();
   const direction = camera.position.clone().sub(target).normalize();
   const distance = focusRadius * 1.72;
 
@@ -388,9 +605,42 @@ function updateCameraForRadius(radius) {
 function bindControls() {
   bindDecimalInput(elements.cltInput, "clt", 0, 50000, 2, updateAutomaticMBand);
   bindRangePair(elements.rpmRange, elements.rpmInput, "rpm", 0, 350, 1, noop);
-  bindRangePair(elements.flipsRange, elements.flipsInput, "flips", 0, 10, 2, noop);
-  bindRangePair(elements.tiltRange, elements.tiltInput, "tilt", -45, 45, 1, updateAxialTilt);
-  bindRangePair(elements.universalTiltRange, elements.universalTiltInput, "universalTilt", -180, 180, 1, updateAxialTilt);
+  bindRangePair(
+    elements.flipsRange,
+    elements.flipsInput,
+    "flips",
+    0,
+    10,
+    2,
+    noop,
+  );
+  bindRangePair(
+    elements.tiltRange,
+    elements.tiltInput,
+    "tilt",
+    -45,
+    45,
+    1,
+    updateAxialTilt,
+  );
+  bindRangePair(
+    elements.universalTiltRange,
+    elements.universalTiltInput,
+    "universalTilt",
+    -180,
+    180,
+    1,
+    updateAxialTilt,
+  );
+  bindRangePair(
+    elements.jitterRange,
+    elements.jitterInput,
+    "fieldJitter",
+    0,
+    15,
+    1,
+    () => updateFieldJitter(clock.elapsedTime),
+  );
   for (const [element, key] of [
     [elements.electronsToggle, "showElectrons"],
     [elements.compassesToggle, "showCompasses"],
@@ -408,7 +658,11 @@ function bindControls() {
   ]) {
     element.addEventListener("input", () => {
       state[key] = clampNumber(element.value, min, max, DEFAULTS[key]);
-      fieldProbes.configure(state.mBand, state.electronCount, state.electronSpeed);
+      fieldProbes.configure(
+        state.mBand,
+        state.electronCount,
+        state.electronSpeed,
+      );
       syncProbeControls();
     });
   }
@@ -416,13 +670,24 @@ function bindControls() {
     fieldProbes.respawn();
     updateElectronStateReadout();
   });
+  elements.electronAttractionRange.addEventListener("input", () => {
+    state.electronAttraction = clampNumber(
+      elements.electronAttractionRange.value,
+      0,
+      5,
+      DEFAULTS.electronAttraction,
+    );
+    syncProbeControls();
+  });
   elements.flipNowButton.addEventListener("click", () => {
     triggerPolarityFlip(clock.elapsedTime);
   });
   elements.menuToggleButton.addEventListener("click", toggleMenu);
   elements.fullscreenButton.addEventListener("click", toggleFullscreen);
   document.addEventListener("fullscreenchange", () => {
-    elements.fullscreenButton.textContent = document.fullscreenElement ? "×" : "⛶";
+    elements.fullscreenButton.textContent = document.fullscreenElement
+      ? "×"
+      : "⛶";
     requestAnimationFrame(resize);
   });
 
@@ -478,6 +743,9 @@ function syncInputs() {
   elements.tiltInput.value = formatInputNumber(state.tilt, 1);
   elements.universalTiltRange.value = state.universalTilt;
   elements.universalTiltInput.value = formatInputNumber(state.universalTilt, 1);
+  elements.jitterRange.value = state.fieldJitter;
+  elements.jitterInput.value = formatInputNumber(state.fieldJitter, 1);
+  updateFieldJitter(0);
   syncProbeControls();
 }
 
@@ -488,19 +756,33 @@ function syncProbeControls() {
   elements.fieldLinesToggle.checked = state.showFieldLines;
   elements.electronCountRange.value = state.electronCount;
   elements.electronSpeedRange.value = state.electronSpeed;
+  elements.electronAttractionRange.value = state.electronAttraction;
   elements.electronCountOutput.value = state.electronCount;
   elements.electronSpeedOutput.value = `${formatInputNumber(state.electronSpeed, 1)}×`;
-  for (const element of [elements.electronCountRange, elements.electronSpeedRange, elements.electronTrailsToggle, elements.respawnElectronsButton]) {
+  elements.electronAttractionOutput.value = `${formatInputNumber(state.electronAttraction, 1)}×`;
+  fieldProbes.attraction = state.electronAttraction;
+  for (const element of [
+    elements.electronCountRange,
+    elements.electronSpeedRange,
+    elements.electronAttractionRange,
+    elements.electronTrailsToggle,
+    elements.respawnElectronsButton,
+  ]) {
     element.disabled = !state.showElectrons;
   }
-  fieldProbes.setVisibility(state.showElectrons, state.showCompasses, state.electronTrails);
+  fieldProbes.setVisibility(
+    state.showElectrons,
+    state.showCompasses,
+    state.electronTrails,
+  );
   lineGroup.visible = state.showFieldLines;
   shellGroup.visible = state.showFieldLines;
   tracerGroup.visible = state.showFieldLines;
   dust.points.visible = false;
-  floor.material.transparent = state.showElectrons;
-  floor.material.opacity = state.showElectrons ? 0.15 : 1;
-  floor.material.depthWrite = !state.showElectrons;
+  const seeThroughFloor = state.showElectrons || state.showFieldLines;
+  floor.material.transparent = seeThroughFloor;
+  floor.material.opacity = seeThroughFloor ? 0.15 : 1;
+  floor.material.depthWrite = !seeThroughFloor;
   floor.material.needsUpdate = true;
   updateElectronStateReadout();
 }
@@ -510,19 +792,24 @@ function updateElectronStateReadout() {
   const text = state.showElectrons
     ? `${counts.free} free (${fieldProbes.inboundCount} inbound) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes`
     : "Electrons hidden";
-  if (elements.electronStateOutput.textContent !== text) elements.electronStateOutput.textContent = text;
+  if (elements.electronStateOutput.textContent !== text)
+    elements.electronStateOutput.textContent = text;
   const events = fieldProbes.events;
   const outcomeText = state.showElectrons
     ? `${events.stays} magnetic bounces · ${events.bandChanges} band crossings · ${events.poleEjections} polar escapes · ${events.randomEjections} other escapes`
     : "";
-  if (elements.electronOutcomeOutput.textContent !== outcomeText) elements.electronOutcomeOutput.textContent = outcomeText;
+  if (elements.electronOutcomeOutput.textContent !== outcomeText)
+    elements.electronOutcomeOutput.textContent = outcomeText;
   elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), incoming at ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random directions around the field, away from the polar caps.`;
   elements.electronBandOutput.hidden = !state.showElectrons;
   if (state.showElectrons) {
     const bandCounts = fieldProbes.bandCounts;
     for (let i = 0; i < bandCounts.length; i += 1) {
-      const output = elements.electronBandOutput.querySelector(`[data-band-index="${i}"]`);
-      if (output.textContent !== String(bandCounts[i])) output.textContent = bandCounts[i];
+      const output = elements.electronBandOutput.querySelector(
+        `[data-band-index="${i}"]`,
+      );
+      if (output.textContent !== String(bandCounts[i]))
+        output.textContent = bandCounts[i];
     }
   }
 }
@@ -534,10 +821,22 @@ function updateAxialTilt() {
   fieldGroup.rotation.z = THREE.MathUtils.degToRad(state.tilt);
 }
 
+function updateFieldJitter(time) {
+  const amplitude = THREE.MathUtils.degToRad(state.fieldJitter);
+  // Smooth, bounded irregular shaking; no independent per-frame random jumps.
+  jitterGroup.rotation.set(
+    amplitude * (0.65 * Math.sin(time * 5.1) + 0.35 * Math.sin(time * 11.3)),
+    amplitude *
+      (0.65 * Math.sin(time * 4.3 + 1.1) + 0.35 * Math.sin(time * 9.7 - 1.1)),
+    amplitude *
+      (0.65 * Math.sin(time * 6.7 + 0.7) + 0.35 * Math.sin(time * 13.1 - 0.7)),
+  );
+}
+
 function calculateMBand(clt) {
   // The formula's continuous limit at zero CLT is 1.09 meters.
   if (clt <= 0) return 1.09;
-  return 1.09 + 40.70 / (1 + (5142 / clt) ** 1.542);
+  return 1.09 + 40.7 / (1 + (5142 / clt) ** 1.542);
 }
 
 function updateAutomaticMBand() {
@@ -568,10 +867,19 @@ function updateField() {
     const color = new THREE.Color(band.color);
 
     const lineCount = getFluxLineCount(band.id);
-    const tubeRadius = Math.max(0.004, Math.min(0.025, radius * (band.id === "m" ? 0.0025 : 0.0015)));
+    const tubeRadius = Math.max(
+      0.004,
+      Math.min(0.025, radius * (band.id === "m" ? 0.0025 : 0.0015)),
+    );
     for (let i = 0; i < lineCount; i += 1) {
       const phi = ((i + 0.5) / lineCount) * Math.PI * 2 + bandIndex * 0.11;
-      const loop = createDipoleLoop(radius, phi, color, band.id === "m" ? 0.82 : band.opacity * 0.7, tubeRadius);
+      const loop = createDipoleLoop(
+        radius,
+        phi,
+        color,
+        band.id === "m" ? 0.82 : band.opacity * 0.7,
+        tubeRadius,
+      );
       loop.curve.userData = { color: band.color, radius };
       lineGroup.add(loop.group);
       fieldLines.push(loop.group);
@@ -610,15 +918,39 @@ function getFluxLineCount(bandId) {
 }
 
 function createDipoleLoop(radius, phi, color, opacity, tubeRadius) {
-  const points = [];
-  const point = [0, 0, 0];
-  for (let i = 0; i <= 160; i += 1) {
-    sampleFieldLine(radius, phi, i / 160, point);
-    points.push(new THREE.Vector3().fromArray(point));
+  const curve = new THREE.Curve();
+  const point = [0, 0, 0],
+    tangent = [0, 0, 0];
+  curve.closed = true;
+  curve.getPoint = (t, target = new THREE.Vector3()) =>
+    target.fromArray(sampleFieldLine(radius, phi, t, point));
+  // Reserve a quarter of the mesh for the curved source return at every scale.
+  // Uniform arc-length sampling formerly skipped the center on large outer loops.
+  curve.getPointAt = curve.getPoint;
+  curve.getTangent = (t, target = new THREE.Vector3()) => {
+    sampleFieldLine(radius, phi, t, point);
+    sampleDipoleField(point, [0, 0, 0], [0, 1, 0], 1, tangent);
+    return target.fromArray(tangent).normalize();
+  };
+  curve.getTangentAt = curve.getTangent;
+  const geometry = new THREE.TubeGeometry(curve, 320, tubeRadius, 8, true);
+  // Keep bundled central flux thin enough to see its curved return and heart.
+  const positions = geometry.attributes.position;
+  for (let i = 0; i <= 320; i++) {
+    sampleFieldLine(radius, phi, i === 320 ? 0 : i / 320, point);
+    const width =
+      0.16 +
+      0.84 * Math.min(1, Math.hypot(...point) / (POLE_DISTANCE * 3)) ** 2;
+    for (let j = 0; j <= 8; j++) {
+      const vertex = i * 9 + j;
+      positions.setXYZ(
+        vertex,
+        point[0] + (positions.getX(vertex) - point[0]) * width,
+        point[1] + (positions.getY(vertex) - point[1]) * width,
+        point[2] + (positions.getZ(vertex) - point[2]) * width,
+      );
+    }
   }
-
-  const curve = new THREE.CatmullRomCurve3(points.slice(0, -1), true);
-  const geometry = new THREE.TubeGeometry(curve, 160, tubeRadius, 8, true);
   const material = new THREE.MeshBasicMaterial({
     color,
     transparent: true,
@@ -633,11 +965,18 @@ function createDipoleLoop(radius, phi, color, opacity, tubeRadius) {
   const arrowPosition = curve.getPointAt(arrowT);
   const arrowDirection = curve.getTangentAt(arrowT).normalize();
   const arrow = new THREE.Mesh(
-    new THREE.ConeGeometry(Math.max(tubeRadius * 3.1, 0.035), Math.max(tubeRadius * 8, 0.14), 18),
+    new THREE.ConeGeometry(
+      Math.max(tubeRadius * 3.1, 0.035),
+      Math.max(tubeRadius * 8, 0.14),
+      18,
+    ),
     material.clone(),
   );
   arrow.position.copy(arrowPosition);
-  arrow.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), arrowDirection);
+  arrow.quaternion.setFromUnitVectors(
+    new THREE.Vector3(0, 1, 0),
+    arrowDirection,
+  );
   arrow.material.opacity = Math.min(1, opacity + 0.34);
   group.add(arrow);
 
@@ -657,7 +996,10 @@ function createTracers(curves) {
     });
 
     for (let i = 0; i < 2; i += 1) {
-      const tracer = new THREE.Mesh(new THREE.SphereGeometry(0.06, 18, 12), material.clone());
+      const tracer = new THREE.Mesh(
+        new THREE.SphereGeometry(0.06, 18, 12),
+        material.clone(),
+      );
       tracer.userData.curve = curve;
       tracer.userData.phase = (index * 0.173 + i * 0.43) % 1;
       tracer.userData.speed = 0.09 + (index % 5) * 0.012;
@@ -672,7 +1014,8 @@ function updateVfx(elapsed) {
     const phase = (tracer.userData.phase + elapsed * tracer.userData.speed) % 1;
     const t = phase; // The field orientation already applies polarity reversal.
     tracer.position.copy(tracer.userData.curve.getPointAt(t));
-    const pulse = 0.95 + Math.sin(elapsed * 10.5 + tracer.userData.phase) * 0.35;
+    const pulse =
+      0.95 + Math.sin(elapsed * 10.5 + tracer.userData.phase) * 0.35;
     tracer.scale.setScalar(pulse);
   }
 
@@ -702,7 +1045,9 @@ function clearObjects(objects, parent) {
     object.traverse((child) => {
       if (child.geometry) child.geometry.dispose();
       if (child.material) {
-        const materials = Array.isArray(child.material) ? child.material : [child.material];
+        const materials = Array.isArray(child.material)
+          ? child.material
+          : [child.material];
         materials.forEach((material) => material.dispose());
       }
     });
@@ -737,7 +1082,11 @@ function updateFlipRotation(elapsedSeconds) {
     return;
   }
   const eased = 0.5 - Math.cos(progress * Math.PI) * 0.5;
-  flipGroup.rotation.z = THREE.MathUtils.lerp(flipStartRotation, flipTargetRotation, eased);
+  flipGroup.rotation.z = THREE.MathUtils.lerp(
+    flipStartRotation,
+    flipTargetRotation,
+    eased,
+  );
 }
 
 function triggerPolarityFlip(elapsedSeconds) {
@@ -769,13 +1118,15 @@ function renderLegend() {
 
 function updateLegendDistances() {
   for (const band of BAND_CONFIG) {
-    const row = elements.legend.querySelector(`[data-band="${band.id}"] .legend-distance`);
+    const row = elements.legend.querySelector(
+      `[data-band="${band.id}"] .legend-distance`,
+    );
     row.textContent = `${formatNumber(state.mBand * band.multiplier, 2)} m`;
   }
 }
 
 function updateViewerFieldReadout() {
-  const epicenter = new THREE.Vector3(0, FIELD_CENTER_Y, 0);
+  const epicenter = FIELD_CENTER;
   const distance = camera.position.distanceTo(epicenter);
   const band = getBandAtDistance(distance);
   const localClt = state.clt * band.strength;
@@ -796,14 +1147,21 @@ function getBandAtDistance(distance) {
     { label: "MP", max: 4.5, strength: 0.1 },
     { label: "MH", max: 6.5, strength: 0.05 },
   ];
-  return bands.find((band) => ratio <= band.max) || { label: "Outside", strength: 0 };
+  return (
+    bands.find((band) => ratio <= band.max) || { label: "Outside", strength: 0 }
+  );
 }
 
 function toggleMenu() {
   const hidden = elements.appShell.classList.toggle("menu-hidden");
   elements.menuToggleButton.textContent = hidden ? "☰" : "×";
-  elements.menuToggleButton.setAttribute("aria-label", hidden ? "Show controls menu" : "Hide controls menu");
-  elements.menuToggleButton.title = hidden ? "Show controls menu" : "Hide controls menu";
+  elements.menuToggleButton.setAttribute(
+    "aria-label",
+    hidden ? "Show controls menu" : "Hide controls menu",
+  );
+  elements.menuToggleButton.title = hidden
+    ? "Show controls menu"
+    : "Hide controls menu";
   requestAnimationFrame(resize);
 }
 
@@ -844,7 +1202,8 @@ function clampNumber(value, min, max, fallback) {
 
 function parseLooseNumber(value) {
   const trimmed = String(value).trim();
-  if (trimmed === "" || trimmed === "." || trimmed === "-" || trimmed === "-.") return null;
+  if (trimmed === "" || trimmed === "." || trimmed === "-" || trimmed === "-.")
+    return null;
   const parsed = Number(trimmed);
   return Number.isFinite(parsed) ? parsed : null;
 }

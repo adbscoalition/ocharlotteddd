@@ -64,7 +64,7 @@ test("negative charge bends opposite to v cross B; reversing B reverses bending"
   near(a[0], b[0]);
   near(a[1], -b[1]);
 });
-test("Boris preserves magnetic-only speed for long runs including strong B", () => {
+test("helical advance preserves magnetic-only speed for long runs including strong B", () => {
   for (const B of [0.1, 10, 1000]) {
     const p = [0, 0, 0],
       v = [1.2, -0.3, 0.8],
@@ -151,8 +151,8 @@ test("normal magnetic flux is continuous through the source surface", () => {
     [0, 1, 0],
     [0.6, 0.8, 0],
   ]) {
-    const inside = n.map((x) => x * SOURCE_RADIUS * (1 - 1e-8)),
-      outside = n.map((x) => x * SOURCE_RADIUS * (1 + 1e-8));
+    const inside = n.map((x) => x * SOURCE_RADIUS * (1 - 1e-9)),
+      outside = n.map((x) => x * SOURCE_RADIUS * (1 + 1e-9));
     const a = sampleMagneticField(inside, center, moment, 4, 1),
       b = sampleMagneticField(outside, center, moment, 4, 1);
     near(
@@ -359,5 +359,99 @@ test("extreme supported radius, speed, intensity and rotation remain finite", ()
     evolve(p, 50, 3, radius, 350);
     assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
     assert.ok(p.substeps <= 64);
+  }
+});
+
+test("all field components and their radial derivatives match across the source", () => {
+  for (const n of [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0.6, 0.8, 0],
+  ]) {
+    const h = 1e-6,
+      at = (r) =>
+        sampleMagneticField(
+          n.map((x) => x * r),
+          center,
+          moment,
+          4,
+          1,
+        );
+    const a = at(SOURCE_RADIUS - h),
+      b = at(SOURCE_RADIUS),
+      c = at(SOURCE_RADIUS + h);
+    for (let j = 0; j < 3; j++) {
+      near(a[j], c[j], 0.004);
+      near((b[j] - a[j]) / h, (c[j] - b[j]) / h, 0.035);
+    }
+  }
+});
+test("source return paths curve inward instead of using a straight vertical connector", () => {
+  for (const r of [0.1, 1, 4, 26, 266]) {
+    const foot = sampleFieldLine(r, 0, EXTERIOR_FRACTION);
+    const middle = sampleFieldLine(r, 0, (1 + EXTERIOR_FRACTION) / 2);
+    assert.ok(middle[0] < foot[0] * 0.7, `${r}: ${middle[0]} vs ${foot[0]}`);
+    near(middle[1], 0, 1e-9);
+    for (let i = 1; i < 25; i++) {
+      const t = EXTERIOR_FRACTION + ((1 - EXTERIOR_FRACTION) * i) / 25;
+      const p = sampleFieldLine(r, 0, t),
+        a = sampleFieldLine(r, 0, t - 1e-5),
+        b = sampleFieldLine(r, 0, t + 1e-5);
+      const B = sampleMagneticField(p, center, moment, 4, 1),
+        d = b.map((x, j) => x - a[j]);
+      assert.ok(
+        d.reduce((sum, x, j) => sum + x * B[j], 0) /
+          (Math.hypot(...d) * Math.hypot(...B)) >
+          0.9999,
+      );
+      assert.ok(Math.hypot(...p) <= SOURCE_RADIUS + 1e-6);
+    }
+  }
+});
+test("tight gyromotion retains the exact phase and displacement at arbitrary field strength", () => {
+  for (const strength of [1, 1e3, 1e7]) {
+    const p = [0, 0, 0],
+      v = [1, 0, 0.5],
+      dt = 1 / 120,
+      omega = -5 * strength,
+      angle = omega * dt;
+    advanceElectron(p, v, [0, 0, strength], dt);
+    near(v[0], Math.cos(angle), 1e-10);
+    near(v[1], -Math.sin(angle), 1e-10);
+    near(p[0], Math.sin(angle) / omega, 1e-12);
+    near(p[1], (Math.cos(angle) - 1) / omega, 1e-12);
+    near(p[2], 0.5 * dt);
+  }
+});
+test("band and pole wells attract gradually from both sides without position changes", () => {
+  for (const [p, j, sign] of [
+    [[3.5, 0, 0], 0, 1],
+    [[4.3, 0, 0], 0, -1],
+    [[6.2, 0, 0], 0, 1],
+    [[7.5, 0, 0], 0, -1],
+    [[0, 0.6, 0], 1, 1],
+    [[0, 1, 0], 1, -1],
+    [[0, -0.6, 0], 1, -1],
+  ]) {
+    const original = [...p],
+      a = [0, 0, 0],
+      u = [0, 0, 0];
+    sampleElectricMotion(p, center, 4, 1, 0, moment, a, u, 2);
+    assert.ok(a[j] * sign > 0, `${p} acceleration ${a}`);
+    assert.deepEqual(p, original);
+  }
+});
+test("attraction control scales electric capture and can disable it", () => {
+  const p = [2.7, 0.3, 1.1],
+    a = [0, 0, 0],
+    b = [0, 0, 0],
+    off = [0, 0, 0],
+    flow = [0, 0, 0];
+  sampleElectricMotion(p, center, 4, 1, 0, moment, a, flow, 1);
+  sampleElectricMotion(p, center, 4, 1, 0, moment, b, flow, 3);
+  sampleElectricMotion(p, center, 4, 1, 0, moment, off, flow, 0);
+  for (let j = 0; j < 3; j++) {
+    near(b[j], 3 * a[j]);
+    near(off[j], 0);
   }
 });

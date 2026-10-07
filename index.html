@@ -107,6 +107,17 @@
             </div>
             <small class="control-hint" id="universalTiltHint">Tilts all field bands together. The human stays upright.</small>
           </label>
+          <label class="control-row">
+            <span>Field jitter</span>
+            <div class="range-pair">
+              <input id="jitterRange" type="range" min="0" max="15" step="0.1" value="0" aria-label="Magnetic field jitter" />
+              <div class="unit-input compact">
+                <input id="jitterInput" type="text" inputmode="decimal" value="0" aria-label="Magnetic field jitter in degrees" />
+                <small>deg</small>
+              </div>
+            </div>
+            <small class="control-hint">Shakes the field around the heart. The human stays upright; zero turns shaking off.</small>
+          </label>
         </section>
 
         <section class="panel-section" aria-labelledby="probesHeading">
@@ -120,7 +131,7 @@
             <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
           </label>
           <p class="control-hint" id="electronsHint">Electrons move under local magnetic and electric forces: spiraling, bouncing, drifting and crossing bands. Field lines connect north to south outside the source and close through its interior.</p>
-          <details class="control-hint"><summary>Physics &amp; references</summary><p>A closed dipole field and adaptive Boris integration drive actual electron motion. Magnetic force bends velocity; the separate CLT electric potential and rotating plasma flow can change energy. Weak random pitch scattering models wave interactions. Source strength, time scales and electric terms are illustrative, not calibrated plasma parameters.</p><p><a href="https://www.feynmanlectures.caltech.edu/II_15.html" target="_blank" rel="noopener noreferrer">Closed magnetic flux — Feynman Lectures</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node24.html" target="_blank" rel="noopener noreferrer">Dipole orbits, mirrors &amp; drift — UT Austin</a><br /><a href="https://docs.plasmapy.org/en/stable/api/plasmapy.simulation.particle_integrators.BorisIntegrator.html" target="_blank" rel="noopener noreferrer">Boris integration — PlasmaPy</a></p></details>
+          <details class="control-hint"><summary>Physics &amp; references</summary><p>Smooth closed magnetic loops and locally exact helical integration drive electron motion. Magnetic force bends velocity; the separate CLT electric potential, band and pole attraction, and rotating plasma flow can change energy. Weak random pitch scattering models wave interactions. Source strength, time scales and electric terms are illustrative, not calibrated plasma parameters.</p><p><a href="https://www.feynmanlectures.caltech.edu/II_15.html" target="_blank" rel="noopener noreferrer">Closed magnetic flux — Feynman Lectures</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node24.html" target="_blank" rel="noopener noreferrer">Dipole orbits, mirrors &amp; drift — UT Austin</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/lectures1/node16.html" target="_blank" rel="noopener noreferrer">Helical motion &amp; E-cross-B drift — UT Austin</a></p></details>
           <p class="control-hint">Cyan: free · Green: interacting · Gold: magnetized · White: escaping</p>
           <p class="control-hint">Capture is active throughout the field, even with lines hidden.</p>
           <p class="control-hint" id="electronReentryOutput">Random re-entry at 2 × MH, incoming at 2 × M m/s.</p>
@@ -154,6 +165,14 @@
               <output id="electronSpeedOutput" for="electronSpeedRange">1×</output>
             </div>
           </label>
+          <label class="control-row">
+            <span>Capture attraction</span>
+            <div class="range-pair">
+              <input id="electronAttractionRange" type="range" min="0" max="5" step="0.1" value="2" aria-label="Electron capture attraction" disabled />
+              <output id="electronAttractionOutput" for="electronAttractionRange">2×</output>
+            </div>
+          </label>
+          <p class="control-hint">Pulls electrons toward nearby bands and poles. Changes take effect without restarting.</p>
           <label class="toggle-row">
             <span>Electron trails</span>
             <input id="electronTrailsToggle" type="checkbox" disabled />
@@ -182,7 +201,11 @@
           </div>
           <div class="readout">
             <span>Model height</span>
-            <strong>1.6 m</strong>
+            <strong>1.68 m</strong>
+          </div>
+          <div class="readout">
+            <span>Field source</span>
+            <strong>Heart</strong>
           </div>
           <div class="readout">
             <span>Viewer band</span>

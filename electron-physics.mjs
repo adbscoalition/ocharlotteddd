@@ -3,14 +3,16 @@ import {
   MH_MULTIPLIER,
   particleBand,
   transformFieldVector,
+  sampleDipoleField,
 } from "./field-lines.mjs";
 
 export const CHARGE_TO_MASS = -5;
 export const REENTRY_RADIUS_FACTOR = 2;
 export const REENTRY_SPEED_FACTOR = 2;
+const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5];
 
-// External dipole and uniform internal field of a magnetized sphere. Normal B
-// is continuous at the source surface, so flux never starts/ends at either pole.
+// Smooth finite current source and external dipole, shared with the rendered
+// flux lines. B and its first derivative are continuous at the source surface.
 // B at the M-band equator equals intensity in display units.
 export function sampleMagneticField(
   position,
@@ -20,40 +22,18 @@ export function sampleMagneticField(
   intensity,
   out = [0, 0, 0],
 ) {
-  const x = position[0] - center[0],
-    y = position[1] - center[1],
-    z = position[2] - center[2];
-  const r2 = x * x + y * y + z * z;
-  if (r2 <= SOURCE_RADIUS * SOURCE_RADIUS) {
-    const scale = 2 * intensity * (radius / SOURCE_RADIUS) ** 3;
-    for (let j = 0; j < 3; j++) out[j] = scale * moment[j];
-  } else {
-    const scale = (intensity * radius ** 3) / (r2 * Math.sqrt(r2));
-    const projection =
-      (3 * (moment[0] * x + moment[1] * y + moment[2] * z)) / r2;
-    out[0] = scale * (projection * x - moment[0]);
-    out[1] = scale * (projection * y - moment[1]);
-    out[2] = scale * (projection * z - moment[2]);
-  }
-  return out;
+  return sampleDipoleField(
+    position,
+    center,
+    moment,
+    intensity * radius ** 3,
+    out,
+  );
 }
 
-export function rotateElectronVelocity(velocity, field, dt) {
-  const tx = (CHARGE_TO_MASS * field[0] * dt) / 2,
-    ty = (CHARGE_TO_MASS * field[1] * dt) / 2,
-    tz = (CHARGE_TO_MASS * field[2] * dt) / 2;
-  const scale = 2 / (1 + tx * tx + ty * ty + tz * tz),
-    [vx, vy, vz] = velocity;
-  const px = vx + vy * tz - vz * ty,
-    py = vy + vz * tx - vx * tz,
-    pz = vz + vx * ty - vy * tx;
-  velocity[0] = vx + scale * (py * tz - pz * ty);
-  velocity[1] = vy + scale * (pz * tx - px * tz);
-  velocity[2] = vz + scale * (px * ty - py * tx);
-}
-
-// Symmetric Boris push; pure B preserves speed. Optional electric acceleration
-// supplies work. A constant plasma flow implements the motional E = -u cross B.
+// Exact local helical advance between symmetric electric kicks. Integrating
+// both displacement and gyro phase avoids the Boris angle/straight-chord error
+// when central cyclotron periods are shorter than the available step budget.
 export function advanceElectron(
   position,
   velocity,
@@ -63,16 +43,47 @@ export function advanceElectron(
   flow = null,
 ) {
   const half = dt / 2;
-  for (let j = 0; j < 3; j++) {
-    position[j] += velocity[j] * half;
+  for (let j = 0; j < 3; j++)
     if (acceleration) velocity[j] += acceleration[j] * half;
-    if (flow) velocity[j] -= flow[j];
+  const strength = Math.hypot(...field);
+  if (strength < 1e-30) {
+    for (let j = 0; j < 3; j++) position[j] += velocity[j] * dt;
+  } else {
+    const bx = field[0] / strength,
+      by = field[1] / strength,
+      bz = field[2] / strength;
+    const vx = velocity[0] - (flow?.[0] || 0),
+      vy = velocity[1] - (flow?.[1] || 0),
+      vz = velocity[2] - (flow?.[2] || 0);
+    const parallel = vx * bx + vy * by + vz * bz,
+      px = vx - parallel * bx,
+      py = vy - parallel * by,
+      pz = vz - parallel * bz;
+    const cx = py * bz - pz * by,
+      cy = pz * bx - px * bz,
+      cz = px * by - py * bx;
+    const omega = CHARGE_TO_MASS * strength,
+      angle = omega * dt,
+      sin = Math.sin(angle),
+      cos = Math.cos(angle);
+    const sinc =
+      Math.abs(angle) < 1e-5 ? dt * (1 - (angle * angle) / 6) : sin / omega;
+    const cosc =
+      Math.abs(angle) < 1e-5
+        ? (omega * dt * dt) / 2
+        : (2 * Math.sin(angle / 2) ** 2) / omega;
+    position[0] +=
+      ((flow?.[0] || 0) + parallel * bx) * dt + px * sinc + cx * cosc;
+    position[1] +=
+      ((flow?.[1] || 0) + parallel * by) * dt + py * sinc + cy * cosc;
+    position[2] +=
+      ((flow?.[2] || 0) + parallel * bz) * dt + pz * sinc + cz * cosc;
+    velocity[0] = (flow?.[0] || 0) + parallel * bx + px * cos + cx * sin;
+    velocity[1] = (flow?.[1] || 0) + parallel * by + py * cos + cy * sin;
+    velocity[2] = (flow?.[2] || 0) + parallel * bz + pz * cos + cz * sin;
   }
-  rotateElectronVelocity(velocity, field, dt);
   for (let j = 0; j < 3; j++) {
-    if (flow) velocity[j] += flow[j];
     if (acceleration) velocity[j] += acceleration[j] * half;
-    position[j] += velocity[j] * half;
   }
 }
 
@@ -111,6 +122,7 @@ export function initializeFieldParticle(
     "scratch",
     "acceleration",
     "flow",
+    "trialVelocity",
   ])
     p[key] ||= [0, 0, 0];
   p.random = random;
@@ -187,15 +199,58 @@ export function sampleElectricMotion(
   axis,
   acceleration,
   flow,
+  attraction = 1,
+  magneticAxis = axis,
 ) {
   const x = position[0] - center[0],
     y = position[1] - center[1],
     z = position[2] - center[2];
   const ratio2 = (x * x + y * y + z * z) / (radius * radius);
-  const capture = (0.7 * intensity) / (1 + intensity) / (1 + ratio2) ** 1.5;
+  const strength = (intensity / (1 + intensity)) * attraction;
+  const capture = (1.4 * strength) / (1 + ratio2) ** 1.5;
   acceleration[0] = -x * capture;
   acceleration[1] = -y * capture;
   acceleration[2] = -z * capture;
+  // Smooth electric potential wells, not magnetic attraction or scripted moves.
+  // Ring wells pull toward neighbouring bands; softened pole wells act locally.
+  const parallel =
+    x * magneticAxis[0] + y * magneticAxis[1] + z * magneticAxis[2];
+  const px = x - parallel * magneticAxis[0],
+    py = y - parallel * magneticAxis[1],
+    pz = z - parallel * magneticAxis[2];
+  const rho = Math.hypot(px, py, pz),
+    q = rho / radius,
+    axial = parallel / radius;
+  let radialForce = 0,
+    axialForce = 0;
+  for (const band of ATTRACTING_BANDS) {
+    const width = 0.11 + band * 0.12,
+      height = 0.75 + band * 0.2,
+      difference = q - band;
+    const exponent =
+      (difference * difference) / (2 * width * width) +
+      (axial * axial) / (2 * height * height);
+    if (exponent > 12) continue;
+    const well =
+      (1.2 * strength * radius * Math.exp(-exponent)) / Math.sqrt(1 + band);
+    radialForce -= (well * difference) / (width * width);
+    axialForce -= (well * axial) / (height * height);
+  }
+  const poleWidth = 0.18 + Math.min(0.12, radius * 0.01);
+  for (let sign = -1; sign <= 1; sign += 2) {
+    const poleParallel = parallel - sign * SOURCE_RADIUS;
+    const weight =
+      (24 * strength) /
+      (1 +
+        (rho * rho + poleParallel * poleParallel) / (poleWidth * poleWidth)) **
+        1.5;
+    radialForce -= weight * rho;
+    axialForce -= weight * poleParallel;
+  }
+  const radialWeight = rho > 1e-12 ? radialForce / rho : 0;
+  acceleration[0] += radialWeight * px + axialForce * magneticAxis[0];
+  acceleration[1] += radialWeight * py + axialForce * magneticAxis[1];
+  acceleration[2] += radialWeight * pz + axialForce * magneticAxis[2];
   const rotation = angularSpeed / (1 + ratio2 * ratio2);
   flow[0] = rotation * (axis[1] * z - axis[2] * y);
   flow[1] = rotation * (axis[2] * x - axis[0] * z);
@@ -262,16 +317,16 @@ export function advanceFieldParticle(
   sampleMagneticField(p.position, center, p.moment, radius, intensity, p.field);
   const speed = Math.hypot(...p.velocity),
     fieldStrength = Math.hypot(...p.field);
-  // Adaptive resolution of cyclotron bending and spatial gradients, bounded for
-  // interactive use. Display-unit scales and the maximum step budget are explicit.
+  // Exact local gyromotion handles rapid central cycles. Substeps still resolve
+  // spatial variation and changes to electric forces; this is not a field-line guide.
   p.substeps = Math.min(
     64,
     Math.max(
       1,
       Math.ceil(
         Math.max(
-          (5 * fieldStrength * dt) / 0.35,
-          (speed * dt) / Math.max(0.02, initialDistance * 0.04),
+          Math.min(8, (5 * fieldStrength * dt) / 0.35),
+          (speed * dt) / Math.max(0.008, initialDistance * 0.025),
         ),
       ),
     ),
@@ -279,8 +334,43 @@ export function advanceFieldParticle(
   const h = dt / p.substeps,
     coupling = p.electricCoupling ?? 1;
   for (let i = 0; i < p.substeps; i++) {
-    for (let j = 0; j < 3; j++)
-      p.scratch[j] = p.position[j] + (p.velocity[j] * h) / 2;
+    sampleMagneticField(
+      p.position,
+      center,
+      p.moment,
+      radius,
+      intensity,
+      p.field,
+    );
+    sampleElectricMotion(
+      p.position,
+      center,
+      radius,
+      intensity,
+      angularSpeed,
+      spinAxis,
+      p.acceleration,
+      p.flow,
+      p.attraction ?? 1,
+      p.moment,
+    );
+    if (coupling !== 1)
+      for (let j = 0; j < 3; j++) {
+        p.acceleration[j] *= coupling;
+        p.flow[j] *= coupling;
+      }
+    for (let j = 0; j < 3; j++) {
+      p.scratch[j] = p.position[j];
+      p.trialVelocity[j] = p.velocity[j];
+    }
+    advanceElectron(
+      p.scratch,
+      p.trialVelocity,
+      p.field,
+      h / 2,
+      p.acceleration,
+      p.flow,
+    );
     sampleMagneticField(
       p.scratch,
       center,
@@ -298,6 +388,8 @@ export function advanceFieldParticle(
       spinAxis,
       p.acceleration,
       p.flow,
+      p.attraction ?? 1,
+      p.moment,
     );
     if (coupling !== 1)
       for (let j = 0; j < 3; j++) {
