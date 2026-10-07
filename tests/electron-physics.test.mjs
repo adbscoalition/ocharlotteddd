@@ -1,314 +1,363 @@
-import test from 'node:test';
-import assert from 'node:assert/strict';
-import { advanceElectron, sampleMagneticField } from '../electron-physics.mjs';
-
-const near = (actual, expected, tolerance = 1e-10) => assert.ok(Math.abs(actual - expected) < tolerance, `${actual} != ${expected}`);
-
-test('zero field produces straight-line motion', () => {
-  const position = [1, 2, 3], velocity = [2, -1, 0.5];
-  advanceElectron(position, velocity, [0, 0, 0], 0.4);
-  position.forEach((value, i) => near(value, [1.8, 1.6, 3.2][i]));
-  assert.deepEqual(velocity, [2, -1, 0.5]);
-});
-
-test('negative charge bends opposite to v cross B and reversing B reverses bending', () => {
-  const positiveFieldVelocity = [1, 0, 0], negativeFieldVelocity = [1, 0, 0];
-  advanceElectron([0, 0, 0], positiveFieldVelocity, [0, 0, 1], 0.01);
-  advanceElectron([0, 0, 0], negativeFieldVelocity, [0, 0, -1], 0.01);
-  assert.ok(positiveFieldVelocity[1] > 0);
-  near(positiveFieldVelocity[0], negativeFieldVelocity[0]);
-  near(positiveFieldVelocity[1], -negativeFieldVelocity[1]);
-});
-
-test('magnetic force preserves speed over long runs, including strong fields', () => {
-  for (const strength of [0.1, 10, 1000]) {
-    const position = [0, 0, 0], velocity = [1.2, -0.3, 0.8];
-    const speed = Math.hypot(...velocity);
-    for (let i = 0; i < 10000; i += 1) advanceElectron(position, velocity, [0, 0, strength], 1 / 120);
-    near(Math.hypot(...velocity), speed, 1e-9);
-    near(velocity[2], 0.8);
-    assert.ok(position.every(Number.isFinite));
-  }
-});
-
-test('parallel velocity is unaffected by the magnetic field', () => {
-  const position = [0, 0, 0], velocity = [0, 2, 0];
-  advanceElectron(position, velocity, [0, 30, 0], 0.5);
-  assert.deepEqual(velocity, [0, 2, 0]);
-  assert.deepEqual(position, [0, 1, 0]);
-});
-
-test('dipole field tracks strength, polarity, distance and rotation', () => {
-  const center = [0, 0.82, 0], moment = [0, 1, 0];
-  const equator = sampleMagneticField([4, 0.82, 0], center, moment, 4, 1, [0, 0, 0]);
-  assert.ok(equator[1] < 0);
-  const pole = sampleMagneticField([0, 4.82, 0], center, moment, 4, 1, [0, 0, 0]);
-  assert.ok(pole[1] > 0);
-  const stronger = sampleMagneticField([4, 0.82, 0], center, moment, 4, 2, [0, 0, 0]);
-  near(stronger[1], equator[1] * 2);
-  const flipped = sampleMagneticField([4, 0.82, 0], center, [0, -1, 0], 4, 1, [0, 0, 0]);
-  near(flipped[1], -equator[1]);
-  const far = sampleMagneticField([8, 0.82, 0], center, moment, 4, 1, [0, 0, 0]);
-  assert.ok(Math.abs(far[1]) < Math.abs(equator[1]));
-  const rotated = sampleMagneticField([0, 4.82, 0], center, [-1, 0, 0], 4, 1, [0, 0, 0]);
-  near(rotated[0], -equator[1]);
-  const core = sampleMagneticField(center, center, moment, 4, 50, [0, 0, 0]);
-  assert.ok(core.every(Number.isFinite));
-  const zero = sampleMagneticField([4, 0.82, 0], center, moment, 4, 0, [0, 0, 0]);
-  assert.ok(zero.every(value => value === 0));
-});
-
-const { advanceFieldParticle, initializeFieldParticle, guidingSpeed } = await import('../electron-physics.mjs');
-const { sampleFieldLine, buildFieldLineArc, fieldLineParameter, particleBand, transformFieldVector } = await import('../field-lines.mjs');
-const identity = [0,0,0,1];
-const seeded = (seed = 42) => () => { seed = (seed * 1664525 + 1013904223) >>> 0; return seed / 4294967296; };
-const fresh = (random = seeded()) => { const p = {}; initializeFieldParticle(p,[0,0,0],4,identity,1,random); return p; };
-const guided = (band = 3, fraction = 0.3) => {
-  const p = fresh();
-  p.guideBand = band; p.guideRadius = 4 * [0.045,0.2,0.5,1,1.7,3.5,4.5,6.5][band];
-  p.arc = buildFieldLineArc(p.guideRadius,p.phi); p.lineDistance = p.arc[64] * fraction;
-  p.lineDirection = 1; p.phase = 'captured'; p.gyroScale = 0; p.pitch = 0.8;
-  p.pitchTarget = 0.8; p.driftRate = 0; p.speedSpread = 1; p.scatterTime = 100;
-  sampleFieldLine(p.guideRadius,p.phi,fieldLineParameter(p.arc,p.lineDistance),p.local);
-  p.position = [...p.local];
+import test from "node:test";
+import assert from "node:assert/strict";
+import {
+  advanceElectron,
+  advanceFieldParticle,
+  initializeFieldParticle,
+  sampleMagneticField,
+  placeIncomingReplacement,
+  reentryRadius,
+  reentrySpeed,
+  populationSpeed,
+  sampleElectricMotion,
+} from "../electron-physics.mjs";
+import {
+  sampleFieldLine,
+  transformFieldVector,
+  SOURCE_RADIUS,
+  EXTERIOR_FRACTION,
+  fieldMapDistance,
+} from "../field-lines.mjs";
+const near = (a, b, t = 1e-9) => assert.ok(Math.abs(a - b) < t, `${a} != ${b}`);
+const identity = [0, 0, 0, 1],
+  center = [0, 0, 0],
+  moment = [0, 1, 0];
+const seeded =
+  (s = 42) =>
+  () => {
+    s = (s * 1664525 + 1013904223) >>> 0;
+    return s / 4294967296;
+  };
+const fresh = (random = seeded(), radius = 4) => {
+  const p = {};
+  initializeFieldParticle(p, center, radius, identity, 1, random);
   return p;
 };
-const evolve = (p,intensity,seconds,rpm=0,radius=4) => {
-  for(let i=0;i<seconds*120;i++) {
-    const angle=i/120*rpm*Math.PI*2/60;
-    const q=[0,Math.sin(angle/2),0,Math.cos(angle/2)];
-    advanceFieldParticle(p,[0,0,0],radius,intensity,q,rpm*Math.PI*2/60,1/120);
+const evolve = (p, I, seconds, radius = 4, rpm = 0) => {
+  for (let i = 0; i < Math.round(seconds * 120); i++) {
+    const a = ((i / 120) * rpm * Math.PI * 2) / 60;
+    advanceFieldParticle(
+      p,
+      center,
+      radius,
+      I,
+      [0, Math.sin(a / 2), 0, Math.cos(a / 2)],
+      (rpm * Math.PI * 2) / 60,
+      1 / 120,
+    );
   }
 };
 
-test('polar inlets launch near both magnetic poles rather than a sphere',()=>{
-  const random=seeded(); let north=0,south=0;
-  for(let i=0;i<100;i++) {
-    const p=fresh(random);
-    assert.ok(Math.hypot(p.position[0],p.position[2]) <= 4*0.5);
-    assert.ok(Math.abs(p.position[1]) > 0.72+4*0.5);
-    if(p.entryPole>0)north++;else south++;
+test("zero B gives exact ballistic motion", () => {
+  const p = [1, 2, 3],
+    v = [2, -1, 0.5];
+  advanceElectron(p, v, [0, 0, 0], 0.4);
+  p.forEach((x, i) => near(x, [1.8, 1.6, 3.2][i]));
+  assert.deepEqual(v, [2, -1, 0.5]);
+});
+test("negative charge bends opposite to v cross B; reversing B reverses bending", () => {
+  const a = [1, 0, 0],
+    b = [1, 0, 0];
+  advanceElectron([0, 0, 0], a, [0, 0, 1], 0.01);
+  advanceElectron([0, 0, 0], b, [0, 0, -1], 0.01);
+  assert.ok(a[1] > 0);
+  near(a[0], b[0]);
+  near(a[1], -b[1]);
+});
+test("Boris preserves magnetic-only speed for long runs including strong B", () => {
+  for (const B of [0.1, 10, 1000]) {
+    const p = [0, 0, 0],
+      v = [1.2, -0.3, 0.8],
+      speed = Math.hypot(...v);
+    for (let i = 0; i < 10000; i++) advanceElectron(p, v, [0, 0, B], 1 / 120);
+    near(Math.hypot(...v), speed);
+    near(v[2], 0.8);
+    assert.ok(p.every(Number.isFinite));
   }
-  assert.ok(north>20 && south>20);
+});
+test("parallel motion is unaffected by uniform B", () => {
+  const p = [0, 0, 0],
+    v = [0, 2, 0];
+  advanceElectron(p, v, [0, 30, 0], 0.5);
+  assert.deepEqual(p, [0, 1, 0]);
+  assert.deepEqual(v, [0, 2, 0]);
+});
+test("uniform B gives the expected Larmor radius", () => {
+  const p = [0, 0, 0],
+    v = [1, 0, 0],
+    r = 0.2;
+  for (let i = 0; i < 1000; i++) {
+    advanceElectron(p, v, [0, 0, 1], 0.001);
+    near(Math.hypot(p[0], p[1] - r), r, 1e-9);
+  }
+});
+test("electric acceleration supplies work with the correct ballistic displacement", () => {
+  const p = [0, 0, 0],
+    v = [0, 0, 0];
+  advanceElectron(p, v, [0, 0, 0], 0.5, [2, 0, 0]);
+  near(v[0], 1);
+  near(p[0], 0.25);
+});
+test("motional electric field conserves relative speed in uniform plasma flow", () => {
+  const p = [0, 0, 0],
+    v = [4, 0, 0],
+    flow = [3, 0, 0];
+  for (let i = 0; i < 1000; i++)
+    advanceElectron(p, v, [0, 0, 2], 1 / 120, null, flow);
+  near(Math.hypot(v[0] - 3, v[1], v[2]), 1);
 });
 
-test('particles enter via a pole and are captured onto a field guide',()=>{
-  const p=fresh(); const pole=p.entryPole;
-  for(let i=0;i<1200 && p.phase!=='captured';i++)advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  assert.equal(p.phase,'captured');
-  assert.equal(p.lineDirection,pole);
-  assert.ok(Math.hypot(p.position[0],p.position[1]-pole*0.72,p.position[2])<0.3);
+test("dipole amplitude scales linearly, reverses with polarity and falls as r cubed", () => {
+  const a = sampleMagneticField([4, 0, 0], center, moment, 4, 1),
+    b = sampleMagneticField([8, 0, 0], center, moment, 4, 1),
+    c = sampleMagneticField([4, 0, 0], center, moment, 4, 2),
+    d = sampleMagneticField([4, 0, 0], center, [0, -1, 0], 4, 1);
+  near(a[1], -1);
+  near(b[1], a[1] / 8);
+  near(c[1], a[1] * 2);
+  near(d[1], -a[1]);
+  assert.ok(sampleMagneticField([0, 4, 0], center, moment, 4, 1)[1] > 0);
+});
+test("the internal return field is finite and points south to north", () => {
+  const B = sampleMagneticField(center, center, moment, 4, 1);
+  assert.ok(B.every(Number.isFinite) && B[1] > 0);
+  const zero = sampleMagneticField(center, center, moment, 4, 0);
+  assert.ok(zero.every((x) => x === 0));
+});
+test("dipole field is divergence-free outside and inside the source", () => {
+  for (const p of [
+    [2, 3, 1],
+    [4, -2, -1],
+    [0.1, 0.2, 0.15],
+  ]) {
+    const h = 1e-5;
+    let divergence = 0;
+    for (let j = 0; j < 3; j++) {
+      const a = [...p],
+        b = [...p];
+      a[j] += h;
+      b[j] -= h;
+      divergence +=
+        (sampleMagneticField(a, center, moment, 4, 1)[j] -
+          sampleMagneticField(b, center, moment, 4, 1)[j]) /
+        (2 * h);
+    }
+    near(divergence, 0, 1e-6);
+  }
+});
+test("normal magnetic flux is continuous through the source surface", () => {
+  for (const n of [
+    [1, 0, 0],
+    [0, 1, 0],
+    [0.6, 0.8, 0],
+  ]) {
+    const inside = n.map((x) => x * SOURCE_RADIUS * (1 - 1e-8)),
+      outside = n.map((x) => x * SOURCE_RADIUS * (1 + 1e-8));
+    const a = sampleMagneticField(inside, center, moment, 4, 1),
+      b = sampleMagneticField(outside, center, moment, 4, 1);
+    near(
+      a.reduce((s, x, j) => s + x * n[j], 0),
+      b.reduce((s, x, j) => s + x * n[j], 0),
+      2e-5,
+    );
+  }
+});
+test("every visible flux loop closes through the source and links both hemispheres", () => {
+  for (const r of [0.1, 1, 4, 26]) {
+    const start = sampleFieldLine(r, 0.7, 0),
+      end = sampleFieldLine(r, 0.7, 1);
+    start.forEach((x, j) => near(x, end[j]));
+    assert.ok(start[1] > 0);
+    assert.ok(sampleFieldLine(r, 0.7, EXTERIOR_FRACTION)[1] < 0);
+    assert.ok(Math.hypot(...sampleFieldLine(r, 0.7, 0.93)) < SOURCE_RADIUS);
+  }
+});
+test("visible curve tangents align with the same B sampled by electrons and compasses", () => {
+  for (const r of [1, 4, 26])
+    for (const t of [0.08, 0.2, 0.4, 0.65, 0.8, 0.91, 0.97]) {
+      const p = sampleFieldLine(r, 0.5, t),
+        a = sampleFieldLine(r, 0.5, t - 1e-5),
+        b = sampleFieldLine(r, 0.5, t + 1e-5),
+        tangent = b.map((x, j) => x - a[j]),
+        B = sampleMagneticField(p, center, moment, 4, 1);
+      const cos =
+        tangent.reduce((s, x, j) => s + x * B[j], 0) /
+        (Math.hypot(...tangent) * Math.hypot(...B));
+      assert.ok(cos > 0.99999, `${r} ${t} alignment ${cos}`);
+    }
 });
 
-test('guided motion follows the exact visible curve family and its tangent',()=>{
-  const p=guided(); const before=[...p.position];
-  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  const t=fieldLineParameter(p.arc,p.lineDistance);
-  const expected=sampleFieldLine(p.guideRadius,p.phi,t);
-  p.position.forEach((value,i)=>near(value,expected[i]));
-  const a=sampleFieldLine(p.guideRadius,p.phi,t-0.001), b=sampleFieldLine(p.guideRadius,p.phi,t+0.001);
-  const direction=p.position.map((v,i)=>v-before[i]);
-  const tangent=b.map((v,i)=>v-a[i]);
-  const dot=direction.reduce((sum,v,i)=>sum+v*tangent[i],0)/(Math.hypot(...direction)*Math.hypot(...tangent));
-  assert.ok(dot>0.999);
+test("initial particles fill a varied volume instead of polar beams or a single shell", () => {
+  const rand = seeded(),
+    ps = Array.from({ length: 200 }, () => fresh(rand));
+  const radii = ps.map((p) => Math.hypot(...p.position));
+  assert.ok(new Set(radii.map((r) => r.toFixed(3))).size > 180);
+  assert.ok(
+    ps.filter(
+      (p) => Math.hypot(p.position[0], p.position[2]) > Math.abs(p.position[1]),
+    ).length > 90,
+  );
+  assert.ok(
+    ps.every((p) => p.position.concat(p.velocity).every(Number.isFinite)),
+  );
 });
-
-test('particles exchange bands continuously at pole reflections',()=>{
-  const p=guided(4,0.9999); p.random=()=>0.8; const oldBand=p.guideBand;
-  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  assert.equal(p.phase,'captured'); assert.notEqual(p.guideBand,oldBand);
-  assert.equal(p.lineDirection,-1); assert.equal(p.visits,1);
-  assert.ok(Math.hypot(p.position[0],p.position[1]+0.72,p.position[2])<0.2);
+test("inner population speeds exceed outer speeds without magnetic work", () => {
+  const speeds = [0.2, 1, 3, 6].map((d) => populationSpeed(4, d * 4));
+  speeds.slice(1).forEach((v, i) => assert.ok(v < speeds[i]));
 });
-
-test('loss-cone particles eject outward through a pole',()=>{
-  const p=guided(3,0.9999); p.pitch=0.08; p.random=()=>0.2;
-  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  assert.equal(p.phase,'released'); assert.equal(p.ejectionReason,'loss_cone');
-  assert.ok(p.velocity[1]<0);
-  const before=p.position[1]; evolve(p,1,0.5);
-  assert.ok(p.position[1]<before);
+test("random replacements launch exactly at 2 MH and 2 M meters per second", () => {
+  const rand = seeded();
+  for (const radius of [1.09, 4.107028973825681, 21.44, 40.60553621054448])
+    for (let i = 0; i < 100; i++) {
+      const p = fresh(rand, radius);
+      placeIncomingReplacement(p, center, radius, identity);
+      near(Math.hypot(...p.position), reentryRadius(radius), 1e-9);
+      near(Math.hypot(...p.velocity), reentrySpeed(radius), 1e-9);
+      assert.ok(
+        Math.abs(p.position[1]) / Math.hypot(...p.position) <= 0.85 + 1e-10,
+      );
+      assert.ok(p.position.reduce((s, x, j) => s + x * p.velocity[j], 0) < 0);
+      assert.ok(p.inbound);
+    }
 });
-
-test('weakening confinement ejects particles where they are without teleporting',()=>{
-  const p=guided(6,0.4);
-  advanceFieldParticle(p,[0,0,0],4,1,identity,12,1/120);
-  const before=[...p.position], velocity=[...p.velocity];
-  advanceFieldParticle(p,[0,0,0],4,0,identity,12,1/120);
-  assert.equal(p.phase,'released'); assert.equal(p.ejectionReason,'weak_field');
-  p.position.forEach((v,i)=>near(v,before[i]+velocity[i]/120));
+test("replacement directions cover azimuth and latitude without polar concentration", () => {
+  const rand = seeded(),
+    octants = new Set();
+  let meanY = 0;
+  for (let i = 0; i < 1000; i++) {
+    const p = fresh(rand);
+    placeIncomingReplacement(p, center, 4, identity);
+    octants.add(p.position.map(Math.sign).join(","));
+    meanY += p.position[1] / 52;
+  }
+  assert.equal(octants.size, 8);
+  assert.ok(Math.abs(meanY / 1000) < 0.04);
 });
-
-test('zero field leaves free particles ballistic even at high RPM',()=>{
-  const p=fresh(), before=[...p.position], velocity=[...p.velocity];
-  evolve(p,0,1,350);
-  assert.equal(p.phase,'free');
-  p.position.forEach((v,i)=>near(v,before[i]+velocity[i]));
+test("tilted replacement positions remain at 2 MH and avoid the tilted polar caps", () => {
+  const q = [0, 0, Math.SQRT1_2, Math.SQRT1_2],
+    p = fresh();
+  placeIncomingReplacement(p, [1, 2, 3], 4, q);
+  const r = p.position.map((x, j) => x - [1, 2, 3][j]),
+    axis = transformFieldVector(moment, q);
+  near(Math.hypot(...r), 52);
+  assert.ok(
+    Math.abs(r.reduce((s, x, j) => s + x * axis[j], 0)) / 52 <= 0.85 + 1e-10,
+  );
+  near(Math.hypot(...p.velocity), 8);
 });
-
-test('field rotation and universal tilt transform guide paths and retain spin velocity',()=>{
-  const p=guided(3,0.3), q=[0,0,Math.sin(Math.PI/4),Math.cos(Math.PI/4)];
-  advanceFieldParticle(p,[1,2,3],4,1,q,12,1/120,[-1,0,0]);
-  const point=transformFieldVector(p.local,q);
-  p.position.forEach((v,i)=>near(v,point[i]+[1,2,3][i]));
-  assert.ok(p.velocity.every(Number.isFinite));
-  const stationary=guided(), rotating=guided();
-  advanceFieldParticle(stationary,[0,0,0],4,1,identity,0,1/120);
-  advanceFieldParticle(rotating,[0,0,0],4,1,identity,12,1/120);
-  assert.ok(Math.hypot(...rotating.velocity)>Math.hypot(...stationary.velocity));
+test("zero-field incoming particles cross MH in 3.25 seconds and stay ballistic", () => {
+  const p = fresh();
+  placeIncomingReplacement(p, center, 4, identity);
+  evolve(p, 0, 3.4);
+  assert.equal(p.inbound, false);
+  assert.ok(fieldMapDistance(p.position, center, identity) < 26);
+  near(Math.hypot(...p.velocity), 8);
 });
-
-test('band readouts change as a particle travels along an outer guide',()=>{
-  const pole=sampleFieldLine(18,0,0), equator=sampleFieldLine(18,0,0.5);
-  assert.equal(particleBand(pole,[0,0,0],[0,1,0],4),0);
-  assert.equal(particleBand(equator,[0,0,0],[0,1,0],4),6);
-  const q=[0,0,Math.SQRT1_2,Math.SQRT1_2], rotated=transformFieldVector(equator,q);
-  assert.equal(particleBand(rotated,[0,0,0],[-1,0,0],4),6);
+test("incoming and escaping particles respond to B, including outside MH", () => {
+  for (const inbound of [true, false]) {
+    const p = fresh();
+    p.position = [30, 12, 2];
+    p.velocity = [0, -8, 0];
+    p.inbound = inbound;
+    p.phase = inbound ? "free" : "released";
+    p.electricCoupling = 0;
+    p.scattering = false;
+    evolve(p, 10, 0.5);
+    near(Math.hypot(...p.velocity), 8);
+    assert.ok(Math.hypot(p.velocity[0], p.velocity[2]) > 0.01);
+  }
 });
-
-test('strength changes retention and guided particles span multiple bands',()=>{
-  const run=intensity=>{
-    const random=seeded(); const ps=Array.from({length:64},()=>fresh(random));
-    ps.forEach(p=>evolve(p,intensity,12,120));
-    return {captured:ps.filter(p=>p.phase==='captured').length, bands:new Set(ps.filter(p=>p.phase==='captured').map(p=>particleBand(p.position,[0,0,0],[0,1,0],4)))};
+test("zero CLT disables magnetic and electric forces even at high rotation", () => {
+  const p = fresh(),
+    before = [...p.position],
+    v = [...p.velocity];
+  evolve(p, 0, 1, 4, 350);
+  p.position.forEach((x, j) => near(x, before[j] + v[j]));
+  p.velocity.forEach((x, j) => near(x, v[j]));
+});
+test("changing orientation changes forces without teleporting a particle", () => {
+  const p = fresh();
+  p.position = [8, 3, 2];
+  p.velocity = [1, 2, 3];
+  p.electricCoupling = 0;
+  p.scattering = false;
+  const before = [...p.position];
+  advanceFieldParticle(
+    p,
+    center,
+    4,
+    1,
+    [0, 0, Math.SQRT1_2, Math.SQRT1_2],
+    0,
+    1 / 120,
+  );
+  assert.ok(Math.hypot(...p.position.map((x, j) => x - before[j])) < 0.05);
+});
+test("adaptive full-particle magnetic integration conserves speed in a nonuniform dipole", () => {
+  const p = fresh();
+  p.electricCoupling = 0;
+  p.scattering = false;
+  const speed = Math.hypot(...p.velocity);
+  evolve(p, 10, 8);
+  near(Math.hypot(...p.velocity), speed, 1e-8);
+});
+test("magnetic mirror bouncing emerges from the Lorentz solver without prescribed paths", () => {
+  const p = fresh();
+  p.position = [4, 0, 0];
+  p.velocity = [5.2, 3, 0];
+  p.electricCoupling = 0;
+  p.scattering = false;
+  let maxY = 0;
+  for (let i = 0; i < 2400; i++) {
+    advanceFieldParticle(p, center, 4, 10, identity, 0, 1 / 120);
+    maxY = Math.max(maxY, Math.abs(p.position[1]));
+  }
+  assert.ok(p.mirrorCount > 10, `mirrors ${p.mirrorCount}`);
+  assert.ok(maxY < 1.2);
+  near(Math.hypot(...p.velocity), Math.hypot(5.2, 3), 1e-8);
+});
+test("field strength increases the magnetized population", () => {
+  const run = (I) => {
+    const rand = seeded();
+    const ps = Array.from({ length: 64 }, () => fresh(rand));
+    for (const p of ps) evolve(p, I, 2);
+    return ps.filter((p) => p.phase === "captured").length;
   };
-  const weak=run(.02), normal=run(1), strong=run(10);
-  assert.ok(normal.captured>weak.captured); assert.ok(strong.captured>=normal.captured);
-  assert.ok(normal.bands.size>=5);
+  assert.ok(run(10) > run(0.02));
 });
-
-test('transport remains finite at extreme radius, strength, speed and rotation',()=>{
-  for(const radius of [.01,4,250]){
-    const p={};initializeFieldParticle(p,[0,0,0],radius,identity,3,seeded());
-    evolve(p,50,10,350,radius);
+test("stronger B invokes additional integration steps", () => {
+  const a = fresh(),
+    b = fresh();
+  for (const p of [a, b]) {
+    p.position = [4, 0, 0];
+    p.velocity = [1, 2, 3];
+    p.electricCoupling = 0;
+    p.scattering = false;
+  }
+  advanceFieldParticle(a, center, 4, 0.1, identity, 0, 1 / 120);
+  advanceFieldParticle(b, center, 4, 50, identity, 0, 1 / 120);
+  assert.ok(b.substeps > a.substeps);
+});
+test("electric capture acceleration vanishes with zero field strength", () => {
+  const a = [0, 0, 0],
+    u = [0, 0, 0];
+  sampleElectricMotion([4, 2, 1], center, 4, 0, 12, moment, a, u);
+  assert.ok(a.every((x) => x === 0)); // no magnetic force couples u when B=0
+});
+test("scattering rotates velocity without adding kinetic energy", () => {
+  const p = fresh();
+  p.electricCoupling = 0;
+  p.scatterTime = 0;
+  const speed = Math.hypot(...p.velocity);
+  advanceFieldParticle(p, center, 4, 1, identity, 0, 1 / 120);
+  near(Math.hypot(...p.velocity), speed, 1e-9);
+});
+test("extreme supported radius, speed, intensity and rotation remain finite", () => {
+  for (const radius of [1.09, 4.107, 40.606]) {
+    const p = {};
+    initializeFieldParticle(p, center, radius, identity, 3, seeded());
+    evolve(p, 50, 3, radius, 350);
     assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
+    assert.ok(p.substeps <= 64);
   }
-});
-
-const { placeIncomingReplacement } = await import('../electron-physics.mjs');
-const { fieldMapDistance } = await import('../field-lines.mjs');
-
-test('replacements start exactly 100 meters beyond the polar MH surface at 15 m/s',()=>{
-  const center=[1,2,3],radius=4,q=[0,0,Math.SQRT1_2,Math.SQRT1_2];
-  const p=fresh();
-  placeIncomingReplacement(p,center,radius,q);
-  const distance=Math.hypot(...p.position.map((v,i)=>v-center[i]));
-  near(distance-radius*6.5*1.45,100);
-  near(Math.hypot(...p.velocity),15);
-  const direction=p.position.map((v,i)=>v-center[i]);
-  assert.ok(direction.reduce((sum,v,i)=>sum+v*p.velocity[i],0)<0);
-  assert.ok(p.inbound);
-});
-
-test('inbound replacements travel 15 meters in one second without respawning or entering capture early',()=>{
-  const p=fresh(); placeIncomingReplacement(p,[0,0,0],4,identity);
-  const before=[...p.position];
-  evolve(p,1,1,0);
-  near(Math.hypot(...p.position.map((v,i)=>v-before[i])),15);
-  assert.ok(p.inbound); assert.equal(p.phase,'free');
-  near(Math.hypot(...p.velocity),15);
-});
-
-test('an inbound replacement joins polar capture after crossing the MH boundary',()=>{
-  const p=fresh(); placeIncomingReplacement(p,[0,0,0],4,identity);
-  const before=fieldMapDistance(p.position,[0,0,0],identity);
-  assert.ok(before>26);
-  evolve(p,1,7,0);
-  assert.equal(p.inbound,false);
-  assert.ok(fieldMapDistance(p.position,[0,0,0],identity)<26);
-  p.pitch=0.8; evolve(p,1,6,0);
-  assert.equal(p.phase,'captured');
-});
-
-
-test('a pole reflection can keep the particle on the same band',()=>{
-  const p=guided(4,0.9999); p.random=()=>0.2;
-  const band=p.guideBand, guide=p.guideRadius;
-  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  assert.equal(p.phase,'captured'); assert.equal(p.guideBand,band); near(p.guideRadius,guide);
-  assert.equal(p.lastOutcome,'stay'); assert.equal(p.lineDirection,-1);
-});
-
-test('some pole encounters eject in a random direction',()=>{
-  const p=guided(3,0.9999); p.pitch=0.08; p.random=()=>0.9;
-  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  assert.equal(p.phase,'released'); assert.equal(p.ejectionRoute,'random');
-  assert.ok(Math.hypot(p.velocity[0],p.velocity[2])>1);
-});
-
-test('most ejections are polar while a minority have random directions',()=>{
-  const random=seeded(123); let polar=0,other=0;
-  for(let i=0;i<1000;i++) {
-    const p=guided(3,0.9999); p.pitch=0.08; p.random=random;
-    advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-    if(p.ejectionRoute==='pole')polar++;else other++;
-  }
-  assert.ok(polar>700&&polar<900); assert.ok(other>100&&other<300);
-});
-
-test('inner populations travel faster than outer populations with equal launch settings',()=>{
-  const speeds=[];
-  for(let band=0;band<8;band++) {
-    const p=guided(band,0.5),before=p.lineDistance;
-    speeds.push(guidingSpeed(p,4));
-    advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-    near((p.lineDistance-before)*120,speeds[band],1e-9);
-  }
-  speeds.slice(1).forEach((v,i)=>assert.ok(v<speeds[i]));
-  assert.ok(speeds[0]>3*speeds[7]);
-});
-
-test('ejected electrons still bend magnetically without gaining kinetic energy',()=>{
-  const p=fresh();p.phase='released';p.position=[4,0,0];p.velocity=[0,0,5];
-  evolve(p,1,0.5);
-  near(Math.hypot(...p.velocity),5,1e-10);
-  assert.ok(Math.abs(p.velocity[0])>1);
-  assert.ok(Math.abs(p.position[0]-4)>0.1);
-});
-
-test('off-axis replacements respond to B before crossing the map boundary',()=>{
-  const p=fresh();p.inbound=true;p.position=[30,12,2];p.velocity=[0,-15,0];
-  evolve(p,10,0.5);
-  assert.ok(p.inbound);
-  near(Math.hypot(...p.velocity),15,1e-10);
-  assert.ok(Math.hypot(p.velocity[0],p.velocity[2])>0.01);
-});
-
-test('pitch scattering changes gradually and does not jitter particle positions',()=>{
-  const p=guided(3,0.5);p.scatterTime=0;p.random=()=>0.1;
-  const before=p.pitch,position=[...p.position];
-  advanceFieldParticle(p,[0,0,0],4,1,identity,0,1/120);
-  assert.ok(p.pitch<before&&p.pitch>before-0.01);
-  assert.ok(Math.hypot(...p.position.map((v,i)=>v-position[i]))<0.2);
-  assert.ok(p.scatterTime>0);
-});
-
-test('gyro motion tightens and rotates faster in a stronger field',()=>{
-  const run=intensity=>{
-    const p=guided(3,0.5);p.gyroScale=0.02;const phase=p.gyroPhase;
-    advanceFieldParticle(p,[0,0,0],4,intensity,identity,0,1/120);
-    const guide=sampleFieldLine(p.guideRadius,p.phi,fieldLineParameter(p.arc,p.lineDistance));
-    return {radius:Math.hypot(...p.local.map((v,i)=>v-guide[i])),angle:Math.abs(p.gyroPhase-phase)};
-  };
-  const weak=run(0.2),strong=run(10);
-  assert.ok(strong.radius<weak.radius);assert.ok(strong.angle>weak.angle);
-});
-
-test('invisible guide radii and orbital phases form a varied continuous population',()=>{
-  const random=seeded(24),ps=Array.from({length:128},()=>fresh(random));
-  for(const p of ps){p.pitch=0.8;p.pitchTarget=0.8;evolve(p,1,5);}
-  const captured=ps.filter(p=>p.phase==='captured');
-  assert.ok(captured.length>80);
-  assert.ok(new Set(captured.map(p=>p.guideRadius.toFixed(4))).size>80);
-  assert.ok(new Set(captured.map(p=>p.phi.toFixed(3))).size>80);
-});
-
-test('released velocity matches actual world displacement through rotating guides',()=>{
-  const p=guided(4,0.4),before=[...p.position],dt=1/120,angle=12*dt;
-  const q=[0,Math.sin(angle/2),0,Math.cos(angle/2)];
-  advanceFieldParticle(p,[0,0,0],4,1,q,12,dt);
-  p.velocity.forEach((v,i)=>near(v,(p.position[i]-before[i])/dt));
-  const atRelease=[...p.position],velocity=[...p.velocity];
-  advanceFieldParticle(p,[0,0,0],4,0,q,12,dt);
-  p.position.forEach((v,i)=>near(v,atRelease[i]+velocity[i]*dt));
 });

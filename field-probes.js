@@ -79,7 +79,7 @@ export class FieldProbes {
     this.points.frustumCulled = this.trails.frustumCulled = false;
     this.electronGroup.add(this.trails, this.points);
     this.compasses = this.createCompasses();
-    this.setVisibility(false, false, true);
+    this.setVisibility(false, false, false);
   }
 
   createCompasses() {
@@ -115,7 +115,7 @@ export class FieldProbes {
     this.radius = radius;
     this.speed = speed;
     this.accumulator = 0;
-    this.points.material.size = radius * 0.028;
+    this.points.material.size = Math.min(0.22, radius * 0.028);
     this.points.geometry.dispose();
     this.trails.geometry.dispose();
     this.points.geometry = new THREE.BufferGeometry();
@@ -206,9 +206,13 @@ export class FieldProbes {
           const previousPhase = particle.phase;
           const previousVisits = particle.visits;
           advanceFieldParticle(particle, this.center, this.radius, intensity, this.stepOrientation, angularSpeed, STEP, this.spinAxis);
-          if (particle.phase === "released" && previousPhase !== "released") this.ejections += 1;
+          if (particle.phase === "released" && previousPhase !== "released") {
+            this.ejections += 1;
+            if (particle.ejectionRoute === "pole") this.events.poleEjections += 1;
+            else this.events.randomEjections += 1;
+          }
           if (particle.visits > previousVisits) {
-            const outcome = { stay: "stays", band_change: "bandChanges", eject_pole: "poleEjections", eject_random: "randomEjections" }[particle.lastOutcome];
+            const outcome = { stay: "stays", band_change: "bandChanges" }[particle.lastOutcome];
             if (outcome) this.events[outcome] += 1;
           }
           particle.age += STEP;

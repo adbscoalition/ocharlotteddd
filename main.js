@@ -2,6 +2,7 @@ import * as THREE from "three";
 import { OrbitControls } from "./OrbitControls.js";
 import { FieldProbes } from "./field-probes.js";
 import { sampleFieldLine } from "./field-lines.mjs";
+import { reentryRadius, reentrySpeed } from "./electron-physics.mjs";
 
 const BAND_CONFIG = [
   { id: "ns", label: "NS", name: "Polar", multiplier: 0.045, color: "#ff2f2f", opacity: 0.78 },
@@ -22,7 +23,7 @@ const DEFAULTS = {
   tilt: 13,
   universalTilt: 0,
   showElectrons: false,
-  electronCount: 800,
+  electronCount: 1600,
   electronSpeed: 1,
   electronTrails: false,
   showCompasses: false,
@@ -32,11 +33,9 @@ const DEFAULTS = {
 const FIELD_CENTER_Y = 0.82;
 const MIN_CAMERA_RADIUS = 5.5;
 const VISUAL_ROTATION_GAIN = 1;
-const FIELD_Y_SCALE = 1.45;
-const FIELD_XZ_SCALE = 1;
+const FIELD_Y_SCALE = 1;
 const POLE_DISTANCE = 0.72;
 const DUST_COUNT = 420;
-const FOG_BANDS = new Set(["ns", "ce", "e", "m", "ps", "ms", "mp", "mh"]);
 
 const elements = {
   appShell: document.querySelector("#appShell"),
@@ -64,6 +63,7 @@ const elements = {
   electronStateOutput: document.querySelector("#electronStateOutput"),
   electronBandOutput: document.querySelector("#electronBandOutput"),
   electronOutcomeOutput: document.querySelector("#electronOutcomeOutput"),
+  electronReentryOutput: document.querySelector("#electronReentryOutput"),
   respawnElectronsButton: document.querySelector("#respawnElectronsButton"),
   compassesToggle: document.querySelector("#compassesToggle"),
   fieldLinesToggle: document.querySelector("#fieldLinesToggle"),
@@ -403,7 +403,7 @@ function bindControls() {
     });
   }
   for (const [element, key, min, max] of [
-    [elements.electronCountRange, "electronCount", 100, 2000],
+    [elements.electronCountRange, "electronCount", 100, 5000],
     [elements.electronSpeedRange, "electronSpeed", 0.1, 3],
   ]) {
     element.addEventListener("input", () => {
@@ -497,7 +497,7 @@ function syncProbeControls() {
   lineGroup.visible = state.showFieldLines;
   shellGroup.visible = state.showFieldLines;
   tracerGroup.visible = state.showFieldLines;
-  dust.points.visible = state.showFieldLines;
+  dust.points.visible = false;
   floor.material.transparent = state.showElectrons;
   floor.material.opacity = state.showElectrons ? 0.15 : 1;
   floor.material.depthWrite = !state.showElectrons;
@@ -508,14 +508,15 @@ function syncProbeControls() {
 function updateElectronStateReadout() {
   const counts = fieldProbes.counts;
   const text = state.showElectrons
-    ? `${counts.free} free (${fieldProbes.inboundCount} inbound) · ${counts.capturing} entering poles · ${counts.captured} guided · ${counts.released} ejected · ${fieldProbes.ejections} total ejections`
+    ? `${counts.free} free (${fieldProbes.inboundCount} inbound) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes`
     : "Electrons hidden";
   if (elements.electronStateOutput.textContent !== text) elements.electronStateOutput.textContent = text;
   const events = fieldProbes.events;
   const outcomeText = state.showElectrons
-    ? `${events.stays} same band · ${events.bandChanges} band transfers · ${events.poleEjections} pole ejections · ${events.randomEjections} random ejections`
+    ? `${events.stays} magnetic bounces · ${events.bandChanges} band crossings · ${events.poleEjections} polar escapes · ${events.randomEjections} other escapes`
     : "";
   if (elements.electronOutcomeOutput.textContent !== outcomeText) elements.electronOutcomeOutput.textContent = outcomeText;
+  elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), incoming at ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random directions around the field, away from the polar caps.`;
   elements.electronBandOutput.hidden = !state.showElectrons;
   if (state.showElectrons) {
     const bandCounts = fieldProbes.bandCounts;
@@ -566,14 +567,8 @@ function updateField() {
     const radius = Math.max(mPhysicalRadius * band.multiplier, 0.045);
     const color = new THREE.Color(band.color);
 
-    if (FOG_BANDS.has(band.id)) {
-      const halo = createBandHalo(radius, color, band.opacity * 0.044);
-      shellGroup.add(halo);
-      fieldShells.push(halo);
-    }
-
     const lineCount = getFluxLineCount(band.id);
-    const tubeRadius = Math.max(0.012, Math.min(0.08, radius * (band.id === "m" ? 0.008 : 0.005)));
+    const tubeRadius = Math.max(0.004, Math.min(0.025, radius * (band.id === "m" ? 0.0025 : 0.0015)));
     for (let i = 0; i < lineCount; i += 1) {
       const phi = ((i + 0.5) / lineCount) * Math.PI * 2 + bandIndex * 0.11;
       const loop = createDipoleLoop(radius, phi, color, band.id === "m" ? 0.82 : band.opacity * 0.7, tubeRadius);
@@ -602,22 +597,6 @@ function updateField() {
   updateElectronStateReadout();
 }
 
-function createBandHalo(radius, color, opacity) {
-  const halo = new THREE.Mesh(
-    new THREE.SphereGeometry(radius, 56, 28),
-    new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity,
-      depthWrite: false,
-      side: THREE.BackSide,
-      blending: THREE.AdditiveBlending,
-    }),
-  );
-  halo.scale.set(FIELD_XZ_SCALE, FIELD_Y_SCALE, FIELD_XZ_SCALE);
-  return halo;
-}
-
 function getFluxLineCount(bandId) {
   if (bandId === "ns") return 4;
   if (bandId === "ce") return 5;
@@ -638,30 +617,18 @@ function createDipoleLoop(radius, phi, color, opacity, tubeRadius) {
     points.push(new THREE.Vector3().fromArray(point));
   }
 
-  const curve = new THREE.CatmullRomCurve3(points);
-  const geometry = new THREE.TubeGeometry(curve, 160, tubeRadius, 8, false);
+  const curve = new THREE.CatmullRomCurve3(points.slice(0, -1), true);
+  const geometry = new THREE.TubeGeometry(curve, 160, tubeRadius, 8, true);
   const material = new THREE.MeshBasicMaterial({
     color,
     transparent: true,
-    opacity: Math.min(1, opacity * 1.35 + 0.12),
-    blending: THREE.AdditiveBlending,
+    opacity: Math.min(0.7, opacity * 0.85 + 0.08),
+    blending: THREE.NormalBlending,
     depthWrite: false,
   });
 
   const group = new THREE.Group();
   group.add(new THREE.Mesh(geometry, material));
-  const glow = new THREE.Mesh(
-    new THREE.TubeGeometry(curve, 160, tubeRadius * 2.7, 8, false),
-    new THREE.MeshBasicMaterial({
-      color,
-      transparent: true,
-      opacity: Math.min(0.42, opacity * 0.36 + 0.08),
-      blending: THREE.AdditiveBlending,
-      depthWrite: false,
-    }),
-  );
-  group.add(glow);
-
   const arrowT = 0.33;
   const arrowPosition = curve.getPointAt(arrowT);
   const arrowDirection = curve.getTangentAt(arrowT).normalize();
@@ -703,7 +670,7 @@ function createTracers(curves) {
 function updateVfx(elapsed) {
   for (const tracer of tracers) {
     const phase = (tracer.userData.phase + elapsed * tracer.userData.speed) % 1;
-    const t = polarityPositive ? phase : 1 - phase;
+    const t = phase; // The field orientation already applies polarity reversal.
     tracer.position.copy(tracer.userData.curve.getPointAt(t));
     const pulse = 0.95 + Math.sin(elapsed * 10.5 + tracer.userData.phase) * 0.35;
     tracer.scale.setScalar(pulse);
