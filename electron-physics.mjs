@@ -9,6 +9,7 @@ import {
 export const CHARGE_TO_MASS = -5;
 export const REENTRY_RADIUS_FACTOR = 2;
 export const REENTRY_SPEED_FACTOR = 2;
+export const RECYCLE_RADIUS_FACTOR = 4;
 const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5].map((band) => ({
   band,
   inverseWidth2: 1 / (0.11 + band * 0.12) ** 2,
@@ -101,14 +102,29 @@ export const reentryRadius = (radius) =>
   radius * MH_MULTIPLIER * REENTRY_RADIUS_FACTOR;
 export const reentrySpeed = (radius) => radius * REENTRY_SPEED_FACTOR;
 
-function directionAwayFromPoles(random, out) {
-  // Uniform azimuth/cosine over the nonpolar part of the shell, not uniform theta.
-  const y = (random() * 2 - 1) * 0.85,
+function randomDirection(random, out, maxCosine = 1) {
+  // Uniform azimuth and cosine latitude give equal probability per solid angle.
+  const y = (random() * 2 - 1) * maxCosine,
     phi = random() * Math.PI * 2,
     radial = Math.sqrt(1 - y * y);
   out[0] = Math.cos(phi) * radial;
   out[1] = y;
   out[2] = Math.sin(phi) * radial;
+}
+
+function directionAwayFromPoles(random, out) {
+  randomDirection(random, out, 0.85);
+}
+
+export function outsideReplacementBoundary(position, center, radius) {
+  return (
+    Math.hypot(
+      position[0] - center[0],
+      position[1] - center[1],
+      position[2] - center[2],
+    ) >
+    radius * MH_MULTIPLIER * RECYCLE_RADIUS_FACTOR
+  );
 }
 
 export function initializeFieldParticle(
@@ -191,8 +207,11 @@ export function placeIncomingReplacement(p, center, radius, orientation) {
     speed = reentrySpeed(radius);
   for (let j = 0; j < 3; j++) {
     p.position[j] = center[j] + p.scratch[j] * distance;
-    p.velocity[j] = -p.scratch[j] * speed;
   }
+  // Launch independently of the spawn position. Include inward, outward,
+  // tangential and polar velocities; the fields steer subsequent motion.
+  randomDirection(p.random || Math.random, p.velocity);
+  for (let j = 0; j < 3; j++) p.velocity[j] *= speed;
   p.phase = "free";
   p.inbound = true;
   p.ejectionReason = null;

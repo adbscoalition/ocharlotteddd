@@ -1077,7 +1077,7 @@ function updateElectronStateReadout() {
     elements.secondaryCaptureOutput.textContent = `Captured: Charlotte 1 ${captured[0]} · Charlotte 2 ${captured[1]}. Counts follow actual local forces.`;
   }
   const text = state.showElectrons
-    ? `${counts.free} free (${fieldProbes.inboundCount} inbound) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes`
+    ? `${counts.free} free (${fieldProbes.inboundCount} not yet entered) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes`
     : "Electrons hidden";
   if (elements.electronStateOutput.textContent !== text)
     elements.electronStateOutput.textContent = text;
@@ -1087,7 +1087,7 @@ function updateElectronStateReadout() {
     : "";
   if (elements.electronOutcomeOutput.textContent !== outcomeText)
     elements.electronOutcomeOutput.textContent = outcomeText;
-  elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), incoming at ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random directions around the field, away from the polar caps.`;
+  elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), launch speed ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random nonpolar spawn positions and independent random launch directions. Outward particles recycle beyond 4 × MH.`;
   elements.electronBandOutput.hidden = !state.showElectrons;
   if (state.showElectrons) {
     const bandCounts = fieldProbes.bandCounts;

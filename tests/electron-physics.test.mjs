@@ -10,6 +10,7 @@ import {
   reentrySpeed,
   populationSpeed,
   sampleElectricMotion,
+  outsideReplacementBoundary,
 } from "../electron-physics.mjs";
 import {
   sampleFieldLine,
@@ -216,7 +217,6 @@ test("random replacements launch exactly at 2 MH and 2 M meters per second", () 
       assert.ok(
         Math.abs(p.position[1]) / Math.hypot(...p.position) <= 0.85 + 1e-10,
       );
-      assert.ok(p.position.reduce((s, x, j) => s + x * p.velocity[j], 0) < 0);
       assert.ok(p.inbound);
     }
 });
@@ -245,9 +245,10 @@ test("tilted replacement positions remain at 2 MH and avoid the tilted polar cap
   );
   near(Math.hypot(...p.velocity), 8);
 });
-test("zero-field incoming particles cross MH in 3.25 seconds and stay ballistic", () => {
+test("inward-moving zero-field particles can cross MH and stay ballistic", () => {
   const p = fresh();
   placeIncomingReplacement(p, center, 4, identity);
+  p.velocity = p.position.map((v) => (-v * 8) / 52);
   evolve(p, 0, 3.4);
   assert.equal(p.inbound, false);
   assert.ok(fieldMapDistance(p.position, center, identity) < 26);
@@ -454,4 +455,46 @@ test("attraction control scales electric capture and can disable it", () => {
     near(b[j], 3 * a[j]);
     near(off[j], 0);
   }
+});
+
+test("replacement launch directions are isotropic and independent of spawn position", () => {
+  const rand = seeded(312),
+    mean = [0, 0, 0],
+    octants = new Set();
+  let inward = 0,
+    radialMean = 0,
+    polar = 0;
+  for (let i = 0; i < 4000; i++) {
+    const p = fresh(rand);
+    placeIncomingReplacement(p, center, 4, identity);
+    const radial =
+      p.position.reduce((sum, v, j) => sum + v * p.velocity[j], 0) / (52 * 8);
+    inward += radial < 0;
+    radialMean += radial;
+    p.velocity.forEach((v, j) => (mean[j] += v / 8));
+    octants.add(p.velocity.map(Math.sign).join(","));
+    if (Math.abs(p.velocity[1] / 8) > 0.9) polar++;
+  }
+  assert.equal(octants.size, 8);
+  assert.ok(inward > 1800 && inward < 2200);
+  assert.ok(Math.abs(radialMean / 4000) < 0.04);
+  mean.forEach((v) => assert.ok(Math.abs(v / 4000) < 0.04));
+  assert.ok(polar > 300 && polar < 500);
+});
+
+test("random replacement directions stay ballistic without fields", () => {
+  const p = fresh();
+  placeIncomingReplacement(p, center, 4, identity);
+  const position = [...p.position],
+    velocity = [...p.velocity];
+  evolve(p, 0, 1);
+  p.position.forEach((v, i) => near(v, position[i] + velocity[i]));
+  p.velocity.forEach((v, i) => near(v, velocity[i]));
+});
+
+test("outward replacement recycling has room to travel beyond the spawn shell", () => {
+  assert.equal(outsideReplacementBoundary([52, 0, 0], center, 4), false);
+  assert.equal(outsideReplacementBoundary([104, 0, 0], center, 4), false);
+  assert.equal(outsideReplacementBoundary([104.01, 0, 0], center, 4), true);
+  assert.equal(outsideReplacementBoundary([54, 1, -3], [2, 1, -3], 4), false);
 });
