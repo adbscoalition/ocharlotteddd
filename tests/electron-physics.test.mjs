@@ -498,3 +498,123 @@ test("outward replacement recycling has room to travel beyond the spawn shell", 
   assert.equal(outsideReplacementBoundary([104.01, 0, 0], center, 4), true);
   assert.equal(outsideReplacementBoundary([54, 1, -3], [2, 1, -3], 4), false);
 });
+
+test("rotation inflow scales with RPM and gain, vanishes without a source, and leaves trapping independent", () => {
+  const sample = (omega, I, gain) => {
+    const a = [0, 0, 0],
+      u = [0, 0, 0];
+    sampleElectricMotion(
+      [4, 2, 1],
+      center,
+      4,
+      I,
+      omega,
+      moment,
+      a,
+      u,
+      2,
+      moment,
+      gain,
+    );
+    return { a, u };
+  };
+  const base = sample(12, 1, 0),
+    inward = sample(12, 1, 1),
+    twice = sample(12, 1, 2),
+    fast = sample(24, 1, 1),
+    fastBase = sample(24, 1, 0);
+  assert.deepEqual(inward.a, base.a);
+  assert.ok(
+    inward.u.reduce((sum, v, i) => sum + (v - base.u[i]) * [4, 2, 1][i], 0) < 0,
+  );
+  inward.u.forEach((v, i) => {
+    near(twice.u[i] - base.u[i], 2 * (v - base.u[i]));
+    near(fast.u[i] - fastBase.u[i], 2 * (v - base.u[i]));
+  });
+  sample(0, 1, 3).u.forEach((v) => near(v, 0));
+  assert.deepEqual(sample(12, 0, 3).u, sample(12, 0, 0).u);
+});
+
+test("rotation inflow is finite at the heart and fades in outer bands", () => {
+  const radial = (distance) => {
+    const a = [0, 0, 0],
+      u = [0, 0, 0];
+    sampleElectricMotion(
+      [distance, 0, 0],
+      center,
+      4,
+      1,
+      12,
+      moment,
+      a,
+      u,
+      0,
+      moment,
+      3,
+    );
+    assert.ok(u.every(Number.isFinite));
+    return -u[0];
+  };
+  near(radial(0), 0);
+  assert.ok(radial(1e-6) < 1e-12);
+  assert.ok(radial(40) < radial(4) * 0.01);
+});
+
+test("integrated magnetized orbits drift inward with inflow; faster rotation strengthens transport", () => {
+  const orbit = (rpm, gain, orientation = identity) => {
+    const p = fresh();
+    p.position = [4, 0, 0];
+    p.scattering = false;
+    p.attraction = 0;
+    p.inflow = gain;
+    const a = [0, 0, 0],
+      u = [0, 0, 0],
+      omega = (rpm * Math.PI * 2) / 60;
+    sampleElectricMotion(
+      p.position,
+      center,
+      4,
+      10,
+      omega,
+      moment,
+      a,
+      u,
+      0,
+      moment,
+      0,
+    );
+    p.velocity = [...u];
+    for (let i = 0; i < 240; i++)
+      advanceFieldParticle(p, center, 4, 10, orientation, omega, 1 / 120);
+    return { radius: Math.hypot(...p.position), band: p.lastBand };
+  };
+  const stationary = orbit(0, 3),
+    circling = orbit(60, 0),
+    slow = orbit(60, 1),
+    fast = orbit(120, 1),
+    reverse = orbit(60, 1, [0, 0, 1, 0]);
+  near(stationary.radius, 4);
+  assert.ok(circling.radius > 3.9);
+  assert.ok(slow.radius < 3 && fast.radius < slow.radius && reverse.radius < 3);
+  assert.ok(slow.band < circling.band);
+});
+
+test("maximum supported rotation inflow remains finite under strong and tilted fields", () => {
+  for (const radius of [1.09, 4.107, 40.606]) {
+    const p = fresh(seeded(), radius);
+    p.inflow = 3;
+    p.attraction = 5;
+    for (let i = 0; i < 180; i++)
+      advanceFieldParticle(
+        p,
+        center,
+        radius,
+        50,
+        [0, 0, Math.SQRT1_2, Math.SQRT1_2],
+        (350 * Math.PI * 2) / 60,
+        1 / 120,
+      );
+    assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
+    assert.ok(p.substeps <= 64);
+  }
+});

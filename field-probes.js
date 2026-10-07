@@ -4,6 +4,7 @@ import {
   initializeFieldParticle,
   placeIncomingReplacement,
   outsideReplacementBoundary,
+  MAX_REENTRY_TIME,
   sampleMagneticField,
 } from "./electron-physics.mjs";
 import {
@@ -43,6 +44,8 @@ export class FieldProbes {
     this.radius = 4;
     this.speed = 1;
     this.attraction = 2;
+    this.inflow = 0;
+    this.nextElectronId = 1;
     this.accumulator = 0;
     this.particles = [];
     this.field = [0, 0, 0];
@@ -61,6 +64,7 @@ export class FieldProbes {
       randomEjections: 0,
     };
     this.replacements = 0;
+    this.reentryTimeouts = 0;
     this.inboundCount = 0;
     this.mapPoint = [0, 0, 0];
     this.bandCounts = new Array(9).fill(0);
@@ -267,6 +271,7 @@ export class FieldProbes {
   }
 
   releaseParticle(particle, replacement = false) {
+    particle.id = this.nextElectronId++;
     const index = this.environment
       ? replacement
         ? Math.min(particle.sourceIndex ?? 0, 1)
@@ -301,9 +306,41 @@ export class FieldProbes {
       randomEjections: 0,
     };
     this.replacements = 0;
+    this.reentryTimeouts = 0;
     for (const particle of this.particles) this.releaseParticle(particle);
     this.accumulator = 0;
     this.writeGeometry();
+  }
+
+  needsRecycling(particle) {
+    if (particle.inbound) {
+      if (particle.age >= MAX_REENTRY_TIME) return true;
+      return this.environment
+        ? this.environment.sources.every((source) =>
+            outsideReplacementBoundary(
+              particle.position,
+              source.center,
+              source.radius,
+            ),
+          )
+        : outsideReplacementBoundary(
+            particle.position,
+            this.center,
+            this.radius,
+          );
+    }
+    return (
+      (particle.phase === "released" || particle.phase === "free") &&
+      (this.environment
+        ? !this.environment.contains(particle.position)
+        : fieldMapDistance(
+            particle.position,
+            this.center,
+            this.orientation,
+            this.mapPoint,
+          ) >
+          this.radius * MH_MULTIPLIER)
+    );
   }
 
   setVisibility(electrons, compasses, trails) {
@@ -318,11 +355,12 @@ export class FieldProbes {
     if (!sources) this.environment = null;
     else {
       if (!this.environment) {
-        this.environment = new FieldSystem(sources, stirring);
+        this.environment = new FieldSystem(sources, stirring, this.inflow);
         this.secondaryPrevious.fromArray(sources[1].orientation);
       }
       this.environment.sources = sources;
       this.environment.stirring = stirring;
+      this.environment.inflow = this.inflow;
       this.environment.prepareOrientations();
     }
     this.layoutCompasses();
@@ -454,6 +492,7 @@ export class FieldProbes {
           const previousPhase = particle.phase;
           const previousVisits = particle.visits;
           particle.attraction = this.attraction;
+          particle.inflow = this.inflow;
           advanceFieldParticle(
             particle,
             this.center,
@@ -478,32 +517,9 @@ export class FieldProbes {
             if (outcome) this.events[outcome] += 1;
           }
           particle.age += STEP;
-          if (
-            particle.inbound
-              ? this.environment
-                ? this.environment.sources.every((source) =>
-                    outsideReplacementBoundary(
-                      particle.position,
-                      source.center,
-                      source.radius,
-                    ),
-                  )
-                : outsideReplacementBoundary(
-                    particle.position,
-                    this.center,
-                    this.radius,
-                  )
-              : (particle.phase === "released" || particle.phase === "free") &&
-                (this.environment
-                  ? !this.environment.contains(particle.position)
-                  : fieldMapDistance(
-                      particle.position,
-                      this.center,
-                      this.orientation,
-                      this.mapPoint,
-                    ) >
-                    this.radius * MH_MULTIPLIER)
-          ) {
+          if (this.needsRecycling(particle)) {
+            if (particle.inbound && particle.age >= MAX_REENTRY_TIME)
+              this.reentryTimeouts++;
             this.releaseParticle(particle, true);
           }
           particle.trailTime += STEP;

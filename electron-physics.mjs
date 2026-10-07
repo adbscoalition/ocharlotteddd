@@ -10,6 +10,7 @@ export const CHARGE_TO_MASS = -5;
 export const REENTRY_RADIUS_FACTOR = 2;
 export const REENTRY_SPEED_FACTOR = 2;
 export const RECYCLE_RADIUS_FACTOR = 4;
+export const MAX_REENTRY_TIME = 20;
 const ATTRACTING_BANDS = [0.2, 0.5, 1, 1.7, 3.5, 4.5, 6.5].map((band) => ({
   band,
   inverseWidth2: 1 / (0.11 + band * 0.12) ** 2,
@@ -233,6 +234,7 @@ export function sampleElectricMotion(
   flow,
   attraction = 1,
   magneticAxis = axis,
+  inflow = 0,
 ) {
   const x = position[0] - center[0],
     y = position[1] - center[1],
@@ -290,6 +292,18 @@ export function sampleElectricMotion(
   flow[0] = rotation * (axis[1] * z - axis[2] * y);
   flow[1] = rotation * (axis[2] * x - axis[0] * z);
   flow[2] = rotation * (axis[0] * y - axis[1] * x);
+  // Optional CLT transport flow, not a consequence of rotation alone. Its
+  // motional electric field produces inward E-cross-B drift where magnetized.
+  // Soften at the heart and fade in outer bands; never move positions directly.
+  const distance2 = x * x + y * y + z * z;
+  const inflowRate =
+    (((0.08 * inflow * Math.abs(angularSpeed) * intensity) / (1 + intensity)) *
+      distance2) /
+    (distance2 + SOURCE_RADIUS ** 2) /
+    (1 + ratio2 * ratio2);
+  flow[0] -= inflowRate * x;
+  flow[1] -= inflowRate * y;
+  flow[2] -= inflowRate * z;
 }
 
 function scatterVelocity(p, dt, intensity) {
@@ -367,6 +381,7 @@ function sampleParticleElectric(
       p.flow,
       p.attraction ?? 1,
       p.moment,
+      p.inflow ?? 0,
     );
 }
 

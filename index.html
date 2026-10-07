@@ -35,6 +35,19 @@
           </div>
         </div>
         <canvas id="scene" aria-label="3D CLT field visualization"></canvas>
+        <section id="electronInspector" class="electron-inspector" aria-labelledby="electronDetailTitle" hidden>
+          <div class="inspector-heading"><strong id="electronDetailTitle">Electron</strong><button id="clearElectronButton" class="icon-button" type="button" aria-label="Close electron details">×</button></div>
+          <dl class="inspector-grid">
+            <div><dt>Status</dt><dd id="electronDetailStatus"></dd></div>
+            <div><dt>Dominant field</dt><dd id="electronDetailField"></dd></div>
+            <div><dt>Band</dt><dd id="electronDetailBand"></dd></div>
+            <div><dt>Heart distance</dt><dd id="electronDetailDistance"></dd></div>
+            <div><dt>Speed</dt><dd id="electronDetailSpeed"></dd></div>
+            <div><dt>Local field</dt><dd id="electronDetailMagnetic"></dd></div>
+          </dl>
+          <p id="electronDetailMotion" class="control-hint"></p>
+          <p id="electronDetailNote" class="control-hint" aria-live="polite"></p>
+        </section>
         <div class="scale-note" id="scaleNote">Scaled view</div>
       </section>
 
@@ -137,6 +150,12 @@
             </div>
             <label class="control-row"><span>Rotation</span><div class="unit-input"><input id="secondaryRPMInput" type="text" inputmode="decimal" value="90" /><small>rpm</small></div></label>
             <label class="control-row"><span>Axial tilt</span><div class="unit-input"><input id="secondaryTiltInput" type="text" inputmode="decimal" value="-13" /><small>deg</small></div></label>
+            <label class="control-row"><span>Polarity flips</span><div class="range-pair with-action"><input id="secondaryFlipsRange" type="range" min="0" max="10" step="0.1" value="0.3" /><div class="unit-input compact"><input id="secondaryFlipsInput" type="text" inputmode="decimal" value="0.3" /><small>/min</small></div><button id="secondaryFlipNowButton" class="icon-button" type="button" aria-label="Flip secondary polarity now" title="Flip secondary polarity now">⇅</button></div></label>
+            <p id="secondaryPolarityStatus" class="control-hint">Polarity stable</p>
+            <label class="control-row"><span>Field jitter</span><div class="range-pair"><input id="secondaryJitterRange" type="range" min="0" max="15" step="0.1" value="0" /><div class="unit-input compact"><input id="secondaryJitterInput" type="text" inputmode="decimal" value="0" /><small>deg</small></div></div></label>
+            <p class="control-hint">Jitter applies to this source. Universal axial tilt, electron display and capture controls apply to both Charlottes.</p>
+            <p id="secondaryFieldReadout" class="control-hint"></p>
+            <p id="secondaryViewerReadout" class="control-hint"></p>
             <label class="toggle-row"><span>Reverse secondary poles</span><input id="secondaryReverseToggle" type="checkbox" /></label>
             <label class="control-row"><span>Interaction stirring</span><div class="range-pair"><input id="stirringRange" type="range" min="0" max="3" step="0.1" value="1" /><output id="stirringOutput">1×</output></div></label>
             <p class="control-hint">Both fields can capture electrons. Local field strength determines which captures them; stronger sources drive more of the modeled overlap flow.</p>
@@ -155,12 +174,12 @@
             <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
           </label>
           <p class="control-hint" id="electronsHint">Electrons move under local magnetic and electric forces: spiraling, bouncing, drifting and crossing bands. Field lines connect north to south outside the source and close through its interior.</p>
-          <details class="control-hint"><summary>Physics &amp; references</summary><p>Smooth closed magnetic loops and locally exact helical integration drive electron motion. Magnetic force bends velocity; the separate CLT electric potential, band and pole attraction, and rotating plasma flow can change energy. Weak random pitch scattering models wave interactions. Two sources contribute vector sums of their magnetic and electric fields. Stirring is a modeled rotating plasma flow, strongest where both fields overlap. Source strength, time scales and electric terms are illustrative, not calibrated plasma parameters.</p><p><a href="https://www.feynmanlectures.caltech.edu/II_15.html" target="_blank" rel="noopener noreferrer">Closed magnetic flux — Feynman Lectures</a><br /><a href="https://www.feynmanlectures.caltech.edu/II_14.html" target="_blank" rel="noopener noreferrer">Superposition of magnetic fields — Feynman Lectures</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node24.html" target="_blank" rel="noopener noreferrer">Dipole orbits, mirrors &amp; drift — UT Austin</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/lectures1/node16.html" target="_blank" rel="noopener noreferrer">Helical motion &amp; E-cross-B drift — UT Austin</a></p></details>
+          <details class="control-hint"><summary>Physics &amp; references</summary><p>Smooth closed magnetic loops and locally exact helical integration drive electron motion. Magnetic force bends velocity; the separate CLT electric potential, band and pole attraction, and rotating plasma flow can change energy. Rotation inflow adds a modeled inward plasma-flow component; rotation alone does not make every electron drift to the center. Weak random pitch scattering models wave interactions. Two sources contribute vector sums of their magnetic and electric fields. Stirring is a modeled rotating plasma flow, strongest where both fields overlap. Source strength, time scales and electric terms are illustrative, not calibrated plasma parameters.</p><p><a href="https://www.feynmanlectures.caltech.edu/II_15.html" target="_blank" rel="noopener noreferrer">Closed magnetic flux — Feynman Lectures</a><br /><a href="https://www.feynmanlectures.caltech.edu/II_14.html" target="_blank" rel="noopener noreferrer">Superposition of magnetic fields — Feynman Lectures</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node24.html" target="_blank" rel="noopener noreferrer">Dipole orbits, mirrors &amp; drift — UT Austin</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/lectures1/node16.html" target="_blank" rel="noopener noreferrer">Helical motion &amp; E-cross-B drift — UT Austin</a></p></details>
           <label class="toggle-row"><span>Hide uncaptured electrons</span><input id="capturedOnlyToggle" type="checkbox" disabled /></label>
           <label class="control-row"><span>Electron colors</span><select id="electronColorMode" disabled><option value="status">Status</option><option value="single">Single color</option><option value="distance">Distance from field</option><option value="speed">Speed</option></select></label>
           <label class="control-row" id="singleColorRow" hidden><span>Single color</span><input id="electronColorInput" type="color" value="#ffd34d" aria-label="Single electron color" /></label>
           <p class="control-hint" id="electronColorHint">Cyan: free · Green: interacting · Gold: magnetized · White: escaping</p>
-          <p class="control-hint">Capture is active throughout the field, even with lines hidden.</p>
+          <p class="control-hint">Click an electron in the viewer to inspect its live status. Capture is active throughout the field, even with lines hidden.</p>
           <p class="control-hint" id="electronReentryOutput">Random re-entry at 2 × MH, random launch directions at 2 × M m/s.</p>
           <p class="control-hint particle-readout" id="electronStateOutput">Electrons hidden</p>
           <p class="control-hint particle-readout" id="electronOutcomeOutput"></p>
@@ -200,6 +219,14 @@
             </div>
           </label>
           <p class="control-hint">Pulls electrons toward nearby bands and poles. Changes take effect without restarting.</p>
+          <label class="control-row">
+            <span>Rotation inflow</span>
+            <div class="range-pair">
+              <input id="rotationInflowRange" type="range" min="0" max="3" step="0.1" value="1" aria-label="Rotation-driven inward drift" disabled />
+              <output id="rotationInflowOutput" for="rotationInflowRange">1×</output>
+            </div>
+          </label>
+          <p class="control-hint">Adds inward transport that grows with RPM and field strength, softens near the heart, and weakens in outer bands. Zero disables inflow.</p>
           <label class="toggle-row">
             <span>Electron trails</span>
             <input id="electronTrailsToggle" type="checkbox" disabled />

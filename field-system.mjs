@@ -161,6 +161,7 @@ export function sampleCombinedElectric(
   flow,
   work,
   cachedFields = null,
+  inflow = 0,
 ) {
   acceleration.fill(0);
   flow.fill(0);
@@ -196,6 +197,7 @@ export function sampleCombinedElectric(
       U,
       attraction,
       s.moment,
+      inflow,
     );
     for (let j = 0; j < 3; j++) acceleration[j] += A[j];
     sx += U[1] * B[2] - U[2] * B[1];
@@ -233,9 +235,10 @@ export function sampleCombinedElectric(
 }
 
 export class FieldSystem {
-  constructor(sources, stirring = 1) {
+  constructor(sources, stirring = 1, inflow = 0) {
     this.sources = sources;
     this.stirring = stirring;
+    this.inflow = inflow;
     this.scratch = [0, 0, 0];
   }
   sampleMagnetic(position, out, work) {
@@ -275,6 +278,7 @@ export class FieldSystem {
       flow,
       work,
       work.sourceFields,
+      this.inflow,
     );
   }
   contains(position) {

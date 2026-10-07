@@ -10,19 +10,33 @@ export class InteractionLines {
     this.lastTime = -Infinity;
     this.field = [0, 0, 0];
     this.scratch = [0, 0, 0];
-    this.lines = Array.from({ length: 32 }, (_, i) => {
+    this.bands = [
+      { name: "NS", radius: 0.045, color: 0xff2f2f },
+      { name: "CE", radius: 0.2, color: 0xff8a1c },
+      { name: "E", radius: 0.5, color: 0xffd84d },
+      { name: "M", radius: 1, color: 0x45df75 },
+      { name: "PS", radius: 1.7, color: 0x37e1ea },
+      { name: "MS", radius: 3.5, color: 0x3e7bff },
+      { name: "MP", radius: 4.5, color: 0xa75cff },
+      { name: "MH", radius: 6.5, color: 0x35105f },
+    ];
+    this.lines = Array.from({ length: this.bands.length * 8 }, (_, i) => {
+      const bandIndex = Math.floor(i / 4) % this.bands.length;
+      const band = this.bands[bandIndex];
       const line = new THREE.Line(
         new THREE.BufferGeometry(),
         new THREE.LineBasicMaterial({
-          color: [0xffd84d, 0x45df75, 0x37e1ea, 0x8d82ff][
-            Math.floor(i / 4) % 4
-          ],
+          color: band.color,
           transparent: true,
-          opacity: 0.5,
+          opacity: bandIndex < 3 ? 0.9 : 0.38,
+          depthTest: bandIndex >= 3,
           depthWrite: false,
         }),
       );
       line.frustumCulled = false;
+      line.userData.band = band.name;
+      line.userData.sourceIndex = Math.floor(i / (this.bands.length * 4));
+      line.renderOrder = bandIndex < 3 ? 3 : 0;
       this.group.add(line);
       return line;
     });
@@ -73,7 +87,7 @@ export class InteractionLines {
   update(time, sources, force = false) {
     if (!this.group.visible || (!force && time - this.lastTime < 0.1)) return;
     this.lastTime = time;
-    const bands = [0.5, 1, 1.7, 3.5];
+    const bands = this.bands;
     let index = 0;
     for (const source of sources) {
       const q = new THREE.Quaternion().fromArray(source.orientation);
@@ -81,9 +95,9 @@ export class InteractionLines {
         for (let j = 0; j < 4; j++) {
           const angle = ((j + 0.35) * Math.PI) / 2;
           const seed = new THREE.Vector3(
-            Math.cos(angle) * source.radius * band,
+            Math.cos(angle) * source.radius * band.radius,
             0,
-            Math.sin(angle) * source.radius * band,
+            Math.sin(angle) * source.radius * band.radius,
           )
             .applyQuaternion(q)
             .add(new THREE.Vector3().fromArray(source.center))

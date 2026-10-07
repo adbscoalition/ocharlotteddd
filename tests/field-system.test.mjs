@@ -215,3 +215,83 @@ test("zero-strength combined sources give ballistic motion and no magnetized ele
   [1.2, 1.9, 3.05].forEach((v, i) => near(v, p.position[i]));
   assert.notEqual(p.phase, "captured");
 });
+
+test("inward transport preserves electric superposition for independently rotating sources", () => {
+  const a = source([0, 0, 0]),
+    b = source([3, 1, -2], 0.7),
+    position = [2, 2, 1];
+  b.spinAxis = [1, 0, 0];
+  b.angularSpeed = 7;
+  const magnetic = sampleCombinedMagnetic(position, [a, b]),
+    acceleration = [0, 0, 0],
+    flow = [0, 0, 0],
+    expected = [0, 0, 0];
+  sampleCombinedElectric(
+    position,
+    [a, b],
+    magnetic,
+    2,
+    0,
+    acceleration,
+    flow,
+    work(),
+    null,
+    1.5,
+  );
+  for (const s of [a, b]) {
+    const B = sampleMagneticField(
+        position,
+        s.center,
+        s.moment,
+        s.radius,
+        s.intensity,
+      ),
+      A = [0, 0, 0],
+      U = [0, 0, 0];
+    sampleElectricMotion(
+      position,
+      s.center,
+      s.radius,
+      s.intensity,
+      s.angularSpeed,
+      s.spinAxis,
+      A,
+      U,
+      2,
+      s.moment,
+      1.5,
+    );
+    const c = cross(U, B);
+    expected.forEach((_, i) => (expected[i] += A[i] - CHARGE_TO_MASS * c[i]));
+  }
+  const c = cross(flow, magnetic);
+  acceleration.forEach((v, i) => near(v - CHARGE_TO_MASS * c[i], expected[i]));
+});
+
+test("combined and single-source inflow integration produce the same trajectory", () => {
+  const s = source([0, 0, 0]),
+    env = new FieldSystem([s], 0, 1.5),
+    a = {},
+    b = {};
+  for (const p of [a, b]) {
+    initializeFieldParticle(p, s.center, 4, s.orientation, 1, () => 0.4);
+    p.scattering = false;
+    p.inflow = 1.5;
+  }
+  for (let i = 0; i < 120; i++) {
+    advanceFieldParticle(a, s.center, 4, 1, s.orientation, 3, 1 / 120);
+    advanceFieldParticle(
+      b,
+      s.center,
+      4,
+      1,
+      s.orientation,
+      3,
+      1 / 120,
+      s.spinAxis,
+      env,
+    );
+  }
+  a.position.forEach((v, i) => near(v, b.position[i], 1e-7));
+  a.velocity.forEach((v, i) => near(v, b.velocity[i], 1e-7));
+});

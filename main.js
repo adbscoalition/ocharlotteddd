@@ -1,5 +1,6 @@
 import * as THREE from "three";
 import { OrbitControls } from "./OrbitControls.js";
+import { ElectronInspector } from "./electron-inspector.js";
 import { InteractionLines } from "./interaction-lines.js";
 import { FieldProbes } from "./field-probes.js";
 import {
@@ -88,6 +89,7 @@ const DEFAULTS = {
   electronCount: 1600,
   electronSpeed: 1,
   electronAttraction: 2,
+  rotationInflow: 1,
   electronTrails: false,
   showCompasses: false,
   showFieldLines: true,
@@ -97,6 +99,8 @@ const DEFAULTS = {
   secondaryY: 0,
   secondaryZ: 0,
   secondaryRPM: 90,
+  secondaryFlips: 0.3,
+  secondaryJitter: 0,
   secondaryTilt: -13,
   secondaryReverse: false,
   stirring: 1,
@@ -117,6 +121,18 @@ const FIELD_Y_SCALE = 1;
 const DUST_COUNT = 420;
 
 const elements = {
+  ...Object.fromEntries(
+    [
+      "secondaryFlipsRange",
+      "secondaryFlipsInput",
+      "secondaryFlipNowButton",
+      "secondaryPolarityStatus",
+      "secondaryJitterRange",
+      "secondaryJitterInput",
+      "secondaryFieldReadout",
+      "secondaryViewerReadout",
+    ].map((id) => [id, document.getElementById(id)]),
+  ),
   ...Object.fromEntries(
     [
       "secondaryToggle",
@@ -169,6 +185,8 @@ const elements = {
   electronSpeedOutput: document.querySelector("#electronSpeedOutput"),
   electronAttractionRange: document.querySelector("#electronAttractionRange"),
   electronAttractionOutput: document.querySelector("#electronAttractionOutput"),
+  rotationInflowRange: document.querySelector("#rotationInflowRange"),
+  rotationInflowOutput: document.querySelector("#rotationInflowOutput"),
   electronTrailsToggle: document.querySelector("#electronTrailsToggle"),
   electronStateOutput: document.querySelector("#electronStateOutput"),
   electronBandOutput: document.querySelector("#electronBandOutput"),
@@ -200,6 +218,11 @@ let currentDisplayRadius = 6.5;
 let flipStartRotation = 0;
 let flipTargetRotation = 0;
 let flipStartedAt = -999;
+let secondaryFlipStart = 0;
+let secondaryFlipTarget = 0;
+let secondaryFlipStartedAt = -999;
+let secondaryFlipRotation = 0;
+let secondaryLastFlipBucket = 0;
 
 const scene = new THREE.Scene();
 scene.fog = new THREE.Fog(0x111211, 10, 28);
@@ -338,6 +361,13 @@ const sources = [0, 1].map(() => ({
   angularSpeed: 0,
 }));
 const interactionLines = new InteractionLines(scene);
+const electronInspector = new ElectronInspector({
+  canvas: elements.canvas,
+  camera,
+  scene,
+  probes: fieldProbes,
+  getSources: () => (state.secondaryEnabled ? sources : [sources[0]]),
+});
 
 renderLegend();
 bindControls();
@@ -353,6 +383,7 @@ renderer.setAnimationLoop(() => {
   advanceSimulation(state.paused ? 0 : delta);
   updateViewerFieldReadout();
   controls.update();
+  electronInspector.update();
   renderer.render(scene, camera);
 });
 
@@ -365,6 +396,7 @@ function advanceSimulation(delta) {
   updateFieldJitter(simulationTime);
   updateFlipRotation(simulationTime);
   updatePolarity(simulationTime);
+  updateSecondaryPolarity(simulationTime);
   if (delta > 0) updateVfx(simulationTime);
   updateSourceMetadata();
   if (state.showElectrons || state.showCompasses) {
@@ -379,6 +411,7 @@ function advanceSimulation(delta) {
     updateElectronStateReadout();
   }
   if (state.secondaryEnabled) interactionLines.update(simulationTime, sources);
+  electronInspector.update();
 }
 
 function updateSourceMetadata() {
@@ -424,10 +457,12 @@ function updateSecondary(fitCamera = true) {
   secondaryFieldGroup.rotation.z = THREE.MathUtils.degToRad(
     state.secondaryTilt,
   );
-  secondaryFlipGroup.rotation.z = state.secondaryReverse ? Math.PI : 0;
+  secondaryFlipGroup.rotation.z =
+    (state.secondaryReverse ? Math.PI : 0) + secondaryFlipRotation;
   secondaryModelGroup.visible = secondaryUniversalGroup.visible =
     state.secondaryEnabled;
   elements.secondaryControls.hidden = !state.secondaryEnabled;
+  elements.secondaryFieldReadout.textContent = `${formatNumber((state.secondaryCLT / 1000) * 7.25, 3)} μT · ${formatNumber(tungstenConcentration(state.secondaryCLT), 4)} mg/m³ tungsten · MH ${formatNumber(calculateMBand(state.secondaryCLT) * 6.5, 2)} m`;
   elements.secondaryMOutput.value = formatInputNumber(
     calculateMBand(state.secondaryCLT),
     2,
@@ -447,6 +482,8 @@ function updateSecondary(fitCamera = true) {
   interactionLines.update(simulationTime, sources, true);
   syncProbeControls();
   if (fitCamera) updateCameraForRadius(currentDisplayRadius);
+  updateViewerFieldReadout();
+  updateLegendDistances();
 }
 
 function syncTimeControls() {
@@ -564,36 +601,63 @@ function createFemaleModel() {
   belt.position.y = 1.035;
   group.add(belt);
   ellipsoid("neck", skin, [0, 1.425, 0], [0.045, 0.076, 0.039]);
-  ellipsoid("head", skin, [0, 1.547, 0.005], [0.096, 0.119, 0.09]);
-  ellipsoid("jaw", skin, [0, 1.492, 0.013], [0.075, 0.063, 0.068]);
-  ellipsoid("nose", skin, [0, 1.535, 0.092], [0.017, 0.03, 0.025]);
+  // One continuous face surface avoids the separate jaw looking like a beard.
+  const faceGeometry = new THREE.SphereGeometry(1, 48, 40);
+  const faceVertices = faceGeometry.attributes.position;
+  for (let i = 0; i < faceVertices.count; i++) {
+    const x = faceVertices.getX(i),
+      y = faceVertices.getY(i),
+      z = faceVertices.getZ(i);
+    const jawWidth = 0.78 + 0.22 * THREE.MathUtils.smoothstep(y, -1, 0.1);
+    const cheek =
+      z > 0
+        ? 0.003 *
+          Math.exp(
+            -(((Math.abs(x) - 0.5) / 0.28) ** 2 + ((y + 0.12) / 0.35) ** 2),
+          )
+        : 0;
+    faceVertices.setXYZ(i, x * 0.096 * jawWidth, y * 0.119, z * 0.09 + cheek);
+  }
+  faceGeometry.computeVertexNormals();
+  const face = new THREE.Mesh(faceGeometry, skin);
+  face.name = "head";
+  face.position.set(0, 1.547, 0.005);
+  group.add(face);
+  ellipsoid("nose-bridge", skin, [0, 1.548, 0.09], [0.009, 0.023, 0.015]);
+  ellipsoid("nose", skin, [0, 1.527, 0.103], [0.012, 0.012, 0.015]);
   for (const sign of [-1, 1]) {
     ellipsoid("ear", skin, [sign * 0.095, 1.545, 0], [0.016, 0.026, 0.012]);
     ellipsoid(
       "eye-white",
       white,
       [sign * 0.034, 1.568, 0.095],
-      [0.02, 0.011, 0.006],
+      [0.016, 0.008, 0.004],
     );
     ellipsoid(
       "iris",
       iris,
-      [sign * 0.034, 1.568, 0.101],
-      [0.007, 0.008, 0.002],
+      [sign * 0.034, 1.568, 0.099],
+      [0.006, 0.006, 0.0018],
     );
     ellipsoid(
       "pupil",
       pupil,
-      [sign * 0.034, 1.568, 0.103],
-      [0.0035, 0.005, 0.001],
+      [sign * 0.034, 1.568, 0.101],
+      [0.0025, 0.0038, 0.001],
     );
     const brow = ellipsoid(
       "brow",
       hair,
       [sign * 0.035, 1.589, 0.094],
-      [0.024, 0.0035, 0.004],
+      [0.019, 0.0025, 0.003],
     );
     brow.rotation.z = -sign * 0.1;
+    ellipsoid(
+      "eye-highlight",
+      white,
+      [sign * 0.034 - 0.0015, 1.57, 0.103],
+      [0.0013, 0.0013, 0.0007],
+    );
     const shoulder = [sign * 0.177, 1.335, 0],
       elbow = [sign * 0.23, 1.115, 0.005],
       wrist = [sign * 0.25, 0.924, 0.025];
@@ -621,31 +685,150 @@ function createFemaleModel() {
       [0.054, 0.034, 0.102],
     );
   }
-  ellipsoid("mouth", lips, [0, 1.498, 0.089], [0.025, 0.0045, 0.004]);
-  const crown = new THREE.Mesh(
-    new THREE.SphereGeometry(0.117, 36, 24, 0, Math.PI * 2, 0, 1.15),
-    hair,
+  ellipsoid("upper-lip", lips, [0, 1.504, 0.089], [0.019, 0.0028, 0.003]);
+  ellipsoid("lower-lip", lips, [0, 1.499, 0.089], [0.015, 0.0026, 0.003]);
+  const curveMesh = (name, points, radius, material) => {
+    const curve = new THREE.CatmullRomCurve3(
+      points.map((p) => new THREE.Vector3().fromArray(p)),
+    );
+    const mesh = new THREE.Mesh(
+      new THREE.TubeGeometry(curve, 32, radius, 6, false),
+      material,
+    );
+    mesh.name = name;
+    group.add(mesh);
+    return mesh;
+  };
+  const crownGeometry = new THREE.SphereGeometry(
+    1,
+    48,
+    32,
+    0,
+    Math.PI * 2,
+    0,
+    Math.PI / 2,
   );
-  crown.position.set(0, 1.548, -0.003);
-  crown.scale.set(0.99, 1.13, 1.02);
+  const crownVertices = crownGeometry.attributes.position;
+  for (let i = 0; i < crownVertices.count; i++) {
+    const x = crownVertices.getX(i),
+      y = crownVertices.getY(i),
+      z = crownVertices.getZ(i);
+    const sweptHairline = Math.max(0, z) ** 2 * (0.045 + 0.007 * x);
+    crownVertices.setXYZ(
+      i,
+      x * 0.106,
+      Math.min(HUMAN_HEIGHT, 1.551 + y * 0.129 + sweptHairline),
+      z * 0.103 - 0.012,
+    );
+  }
+  crownGeometry.computeVertexNormals();
+  const crown = new THREE.Mesh(crownGeometry, hair);
+  crown.name = "hair-crown";
   group.add(crown);
-  ellipsoid("hair-back", hair, [0, 1.444, -0.071], [0.098, 0.202, 0.052]);
+  ellipsoid("hair-back", hair, [0, 1.46, -0.073], [0.096, 0.19, 0.046]);
   for (const sign of [-1, 1]) {
     const lock = ellipsoid(
       "hair-side",
       hair,
-      [sign * 0.101, 1.469, -0.008],
-      [0.026, 0.136, 0.057],
+      [sign * 0.101, 1.479, -0.028],
+      [0.024, 0.135, 0.045],
     );
-    lock.rotation.z = sign * 0.08;
+    lock.rotation.z = sign * 0.075;
   }
-  const part = ellipsoid(
-    "hair-part",
-    hair,
-    [-0.028, 1.638, 0.047],
-    [0.078, 0.035, 0.047],
+  const hairHighlight = new THREE.MeshStandardMaterial({
+    color: 0x765348,
+    roughness: 0.72,
+  });
+  // Fine strands follow the crown surface instead of floating above it.
+  for (let strand = 0; strand < 7; strand++) {
+    const points = [];
+    for (let step = 0; step <= 8; step++) {
+      const theta = 0.24 + step * 0.15;
+      const phi = 0.5 + strand * 0.14 + theta * 0.45;
+      const x = Math.cos(phi) * Math.sin(theta),
+        y = Math.cos(theta),
+        z = Math.sin(phi) * Math.sin(theta);
+      points.push([
+        x * 0.1075,
+        Math.min(
+          HUMAN_HEIGHT,
+          1.552 + y * 0.129 + Math.max(0, z) ** 2 * (0.045 + 0.007 * x),
+        ),
+        z * 0.1045 - 0.012,
+      ]);
+    }
+    curveMesh("hair-top-strand", points, 0.001, hairHighlight);
+  }
+  for (let i = 0; i < 5; i++) {
+    const x = (i - 2) * 0.03;
+    curveMesh(
+      "hair-strand",
+      [
+        [x * 0.6, 1.66, -0.062],
+        [x, 1.56, -0.116],
+        [x * 1.1, 1.4, -0.112],
+        [x * 0.9, 1.29, -0.088],
+      ],
+      0.0018,
+      hairHighlight,
+    );
+  }
+  // Thin clear lenses, light metal rims, a bridge and curved temple arms.
+  const frameMaterial = new THREE.MeshStandardMaterial({
+    color: 0xcbbfa9,
+    roughness: 0.32,
+    metalness: 0.55,
+  });
+  const lensMaterial = new THREE.MeshPhysicalMaterial({
+    color: 0xffffff,
+    roughness: 0.05,
+    transmission: 0.95,
+    thickness: 0.0006,
+    ior: 1.45,
+    transparent: true,
+    opacity: 0.22,
+    depthWrite: false,
+    side: THREE.DoubleSide,
+  });
+  for (const sign of [-1, 1]) {
+    const rim = new THREE.Mesh(
+      new THREE.TorusGeometry(0.024, 0.0014, 8, 48),
+      frameMaterial,
+    );
+    rim.name = "glasses-frame";
+    rim.position.set(sign * 0.035, 1.568, 0.114);
+    rim.scale.y = 0.68;
+    group.add(rim);
+    const lens = new THREE.Mesh(
+      new THREE.CircleGeometry(0.023, 48),
+      lensMaterial,
+    );
+    lens.name = "glasses-lens";
+    lens.position.copy(rim.position);
+    lens.scale.y = 0.68;
+    group.add(lens);
+    curveMesh(
+      "glasses-temple",
+      [
+        [sign * 0.059, 1.571, 0.114],
+        [sign * 0.092, 1.571, 0.068],
+        [sign * 0.107, 1.558, 0.014],
+        [sign * 0.099, 1.547, -0.018],
+      ],
+      0.0013,
+      frameMaterial,
+    );
+  }
+  curveMesh(
+    "glasses-bridge",
+    [
+      [-0.011, 1.571, 0.114],
+      [0, 1.576, 0.118],
+      [0.011, 1.571, 0.114],
+    ],
+    0.0013,
+    frameMaterial,
   );
-  part.rotation.z = 0.18;
   // A small marker identifies the anatomical heart inside the chest.
   const heart = new THREE.Mesh(
     new THREE.SphereGeometry(0.012, 20, 12),
@@ -773,6 +956,32 @@ function updateCameraForRadius(radius) {
 }
 
 function bindControls() {
+  bindRangePair(
+    elements.secondaryFlipsRange,
+    elements.secondaryFlipsInput,
+    "secondaryFlips",
+    0,
+    10,
+    2,
+    () => {
+      secondaryLastFlipBucket =
+        state.secondaryFlips > 0
+          ? Math.floor((simulationTime * state.secondaryFlips) / 60)
+          : 0;
+    },
+  );
+  bindRangePair(
+    elements.secondaryJitterRange,
+    elements.secondaryJitterInput,
+    "secondaryJitter",
+    0,
+    15,
+    1,
+    () => updateFieldJitter(simulationTime),
+  );
+  elements.secondaryFlipNowButton.addEventListener("click", () =>
+    triggerSecondaryFlip(simulationTime),
+  );
   elements.pauseButton.addEventListener("click", () => {
     state.paused = !state.paused;
     syncTimeControls();
@@ -909,6 +1118,15 @@ function bindControls() {
     );
     syncProbeControls();
   });
+  elements.rotationInflowRange.addEventListener("input", () => {
+    state.rotationInflow = clampNumber(
+      elements.rotationInflowRange.value,
+      0,
+      3,
+      DEFAULTS.rotationInflow,
+    );
+    syncProbeControls();
+  });
   elements.flipNowButton.addEventListener("click", () => {
     triggerPolarityFlip(simulationTime);
   });
@@ -926,6 +1144,13 @@ function bindControls() {
     simulationTime = 0;
     flipStartedAt = -999;
     flipTargetRotation = flipStartRotation = lastFlipBucket = 0;
+    secondaryFlipStart =
+      secondaryFlipTarget =
+      secondaryFlipRotation =
+      secondaryLastFlipBucket =
+        0;
+    secondaryFlipStartedAt = -999;
+    electronInspector.clear();
     polarityPositive = true;
     fieldGroup.rotation.y =
       secondaryFieldGroup.rotation.y =
@@ -972,6 +1197,16 @@ function bindDecimalInput(input, key, min, max, decimals, onChange) {
 }
 
 function syncInputs() {
+  elements.secondaryFlipsRange.value = state.secondaryFlips;
+  elements.secondaryFlipsInput.value = formatInputNumber(
+    state.secondaryFlips,
+    2,
+  );
+  elements.secondaryJitterRange.value = state.secondaryJitter;
+  elements.secondaryJitterInput.value = formatInputNumber(
+    state.secondaryJitter,
+    1,
+  );
   elements.secondaryToggle.checked = state.secondaryEnabled;
   for (const key of [
     "secondaryCLT",
@@ -1036,10 +1271,16 @@ function syncProbeControls() {
   elements.electronSpeedOutput.value = `${formatInputNumber(state.electronSpeed, 1)}×`;
   elements.electronAttractionOutput.value = `${formatInputNumber(state.electronAttraction, 1)}×`;
   fieldProbes.attraction = state.electronAttraction;
+  fieldProbes.inflow = state.rotationInflow;
+  if (fieldProbes.environment)
+    fieldProbes.environment.inflow = state.rotationInflow;
+  elements.rotationInflowRange.value = state.rotationInflow;
+  elements.rotationInflowOutput.value = `${formatInputNumber(state.rotationInflow, 1)}×`;
   for (const element of [
     elements.electronCountRange,
     elements.electronSpeedRange,
     elements.electronAttractionRange,
+    elements.rotationInflowRange,
     elements.electronTrailsToggle,
     elements.respawnElectronsButton,
     elements.capturedOnlyToggle,
@@ -1077,7 +1318,7 @@ function updateElectronStateReadout() {
     elements.secondaryCaptureOutput.textContent = `Captured: Charlotte 1 ${captured[0]} · Charlotte 2 ${captured[1]}. Counts follow actual local forces.`;
   }
   const text = state.showElectrons
-    ? `${counts.free} free (${fieldProbes.inboundCount} not yet entered) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes`
+    ? `${counts.free} free (${fieldProbes.inboundCount} not yet entered) · ${counts.capturing} interacting · ${counts.captured} magnetized · ${counts.released} escaping · ${fieldProbes.ejections} total escapes · ${fieldProbes.reentryTimeouts} outside retries`
     : "Electrons hidden";
   if (elements.electronStateOutput.textContent !== text)
     elements.electronStateOutput.textContent = text;
@@ -1087,7 +1328,7 @@ function updateElectronStateReadout() {
     : "";
   if (elements.electronOutcomeOutput.textContent !== outcomeText)
     elements.electronOutcomeOutput.textContent = outcomeText;
-  elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), launch speed ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random nonpolar spawn positions and independent random launch directions. Outward particles recycle beyond 4 × MH.`;
+  elements.electronReentryOutput.textContent = `Re-entry at ${formatNumber(reentryRadius(state.mBand), 2)} m (2 × MH), launch speed ${formatNumber(reentrySpeed(state.mBand), 2)} m/s (2 × M). Random nonpolar spawn positions and independent random launch directions. Outward particles recycle beyond 4 × MH; particles still outside after 20 simulation seconds retry.`;
   elements.electronBandOutput.hidden = !state.showElectrons;
   if (state.showElectrons) {
     const bandCounts = fieldProbes.bandCounts;
@@ -1121,7 +1362,15 @@ function updateFieldJitter(time) {
     amplitude *
       (0.65 * Math.sin(time * 6.7 + 0.7) + 0.35 * Math.sin(time * 13.1 - 0.7)),
   );
-  secondaryJitterGroup.rotation.copy(jitterGroup.rotation);
+  const secondaryAmplitude = THREE.MathUtils.degToRad(state.secondaryJitter);
+  secondaryJitterGroup.rotation.set(
+    secondaryAmplitude *
+      (0.65 * Math.sin(time * 5.1 + 0.8) + 0.35 * Math.sin(time * 11.3 - 0.8)),
+    secondaryAmplitude *
+      (0.65 * Math.sin(time * 4.3 + 1.7) + 0.35 * Math.sin(time * 9.7 - 1.7)),
+    secondaryAmplitude *
+      (0.65 * Math.sin(time * 6.7 + 1.4) + 0.35 * Math.sin(time * 13.1 - 1.4)),
+  );
 }
 
 function calculateMBand(clt) {
@@ -1393,6 +1642,34 @@ function triggerPolarityFlip(elapsedSeconds) {
   flipStartedAt = elapsedSeconds;
 }
 
+function triggerSecondaryFlip(time) {
+  secondaryFlipStart = secondaryFlipRotation;
+  secondaryFlipTarget = secondaryFlipStart + Math.PI;
+  secondaryFlipStartedAt = time;
+}
+
+function updateSecondaryPolarity(time) {
+  if (!state.secondaryEnabled) return;
+  if (state.secondaryFlips > 0) {
+    const period = 60 / state.secondaryFlips;
+    const bucket = Math.floor(time / period);
+    if (bucket !== secondaryLastFlipBucket) {
+      secondaryLastFlipBucket = bucket;
+      triggerSecondaryFlip(time);
+    }
+    elements.secondaryPolarityStatus.textContent = `Next flip ${Math.ceil(period - (time % period))}s`;
+  } else elements.secondaryPolarityStatus.textContent = "Polarity stable";
+  const progress = Math.min(1, Math.max(0, time - secondaryFlipStartedAt));
+  const eased = 0.5 - Math.cos(progress * Math.PI) * 0.5;
+  secondaryFlipRotation = THREE.MathUtils.lerp(
+    secondaryFlipStart,
+    secondaryFlipTarget,
+    eased,
+  );
+  secondaryFlipGroup.rotation.z =
+    (state.secondaryReverse ? Math.PI : 0) + secondaryFlipRotation;
+}
+
 function positionPolarityCaps() {
   capNorth.position.set(0, POLE_DISTANCE, 0);
   capSouth.position.set(0, -POLE_DISTANCE, 0);
@@ -1418,7 +1695,9 @@ function updateLegendDistances() {
     const row = elements.legend.querySelector(
       `[data-band="${band.id}"] .legend-distance`,
     );
-    row.textContent = `${formatNumber(state.mBand * band.multiplier, 2)} m`;
+    row.textContent = state.secondaryEnabled
+      ? `1: ${formatNumber(state.mBand * band.multiplier, 2)} m · 2: ${formatNumber(calculateMBand(state.secondaryCLT) * band.multiplier, 2)} m`
+      : `${formatNumber(state.mBand * band.multiplier, 2)} m`;
   }
 }
 
@@ -1429,10 +1708,19 @@ function updateViewerFieldReadout() {
   const localClt = state.clt * band.strength;
   elements.viewerBandReadout.textContent = `${band.label} · ${formatNumber(distance, 1)} m`;
   elements.localCltReadout.textContent = `${formatNumber(localClt, localClt >= 100 ? 0 : 1)} CLT`;
+  if (state.secondaryEnabled) {
+    const distance = camera.position.distanceTo(secondaryCenter);
+    const band = getBandAtDistance(
+      distance,
+      calculateMBand(state.secondaryCLT),
+    );
+    const localClt = state.secondaryCLT * band.strength;
+    elements.secondaryViewerReadout.textContent = `Viewer: ${band.label} · ${formatNumber(distance, 1)} m · ${formatNumber(localClt, localClt >= 100 ? 0 : 1)} CLT. Re-entry: ${formatNumber(calculateMBand(state.secondaryCLT) * 13, 2)} m at ${formatNumber(calculateMBand(state.secondaryCLT) * 2, 2)} m/s.`;
+  }
 }
 
-function getBandAtDistance(distance) {
-  const mRadius = Math.max(state.mBand, 0.001);
+function getBandAtDistance(distance, radius = state.mBand) {
+  const mRadius = Math.max(radius, 0.001);
   const ratio = distance / mRadius;
   const bands = [
     { label: "NS", max: 0.045, strength: 1.55 },
