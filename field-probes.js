@@ -6,6 +6,7 @@ import {
   outsideReplacementBoundary,
   MAX_REENTRY_TIME,
   sampleMagneticField,
+  nearFieldPole,
 } from "./electron-physics.mjs";
 import {
   particleBand,
@@ -36,6 +37,7 @@ export class FieldProbes {
     this.renderColor = new THREE.Color();
     this.sampleColor = [0, 0, 0];
     this.captureCounts = [0, 0];
+    this.poleCounts = [[0, 0], [0, 0]];
     this.frozenEnabled = false;
     this.secondaryPrevious = new THREE.Quaternion();
     this.secondaryTarget = new THREE.Quaternion();
@@ -572,8 +574,20 @@ export class FieldProbes {
     this.counts = { free: 0, capturing: 0, captured: 0, released: 0 };
     this.bandCounts.fill(0);
     this.captureCounts.fill(0);
+    this.poleCounts.forEach((counts) => counts.fill(0));
+    const polarSources = this.environment?.sources ?? [
+      this.primarySource ?? { center: this.center, moment: this.moment },
+    ];
     this.inboundCount = 0;
     this.particles.forEach((particle, i) => {
+      polarSources.forEach((source, index) => {
+        const pole = nearFieldPole(
+          particle.position,
+          source.center,
+          source.moment,
+        );
+        if (pole >= 0) this.poleCounts[index][pole]++;
+      });
       this.counts[particle.phase] += 1;
       if (particle.inbound) this.inboundCount += 1;
       if (particle.phase === "captured")

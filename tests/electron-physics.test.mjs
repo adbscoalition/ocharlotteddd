@@ -15,6 +15,7 @@ import {
   entrainedRotation,
   captureRelaxationRate,
   relaxCaptureEnergy,
+  nearFieldPole,
 } from "../electron-physics.mjs";
 import {
   sampleFieldLine,
@@ -203,7 +204,11 @@ test("initial electrons fill three-dimensional space without a preferred ring pl
     assert.ok(p.position.concat(p.velocity).every(Number.isFinite));
   }
   secondMoments.forEach(v => assert.ok(v > 0.28 && v < 0.38, `Angular second moment ${v}`));
-  assert.ok(Math.max(...histogram) < particles.length * 0.2);
+  // A smooth near-source density is intentional; no single narrow radial bin
+  // should contain the whole moving population.
+  assert.ok(Math.max(...histogram) < particles.length * 0.3);
+  assert.ok(particles.filter(p => Math.hypot(...p.position) < 6).length > 350);
+  assert.ok(particles.filter(p => Math.hypot(...p.position) > 12).length > 300);
   assert.ok(new Set(particles.map(p => Math.hypot(...p.position).toFixed(3))).size > 900);
 });
 test("inner population speeds exceed outer speeds without magnetic work", () => {
@@ -797,4 +802,43 @@ test("free-volume and polar-injected populations avoid CE pileup while staying i
     assert.ok(particles.filter(p => Math.hypot(...p.position) < radius * 6.5).length >= particles.length * 0.9);
     assert.ok(particles.filter(p => p.phase === "captured").length >= particles.length * 0.5);
   }
+});
+
+test("polar readouts follow each source heart and magnetic orientation without changing positions", () => {
+  const c = [3, -2, 1], a = [1, 0, 0];
+  for (const [position, expected] of [
+    [[3.72, -2, 1], 0], [[2.28, -2, 1], 1],
+    [[3.72, -1.56, 1], 0], [[3.72, -1.54, 1], -1], [[3, -2, 1], -1],
+  ]) {
+    const original = [...position];
+    assert.equal(nearFieldPole(position, c, a), expected);
+    assert.deepEqual(position, original);
+  }
+  assert.equal(nearFieldPole([3.72, -2, 1], c, [-1, 0, 0]), 1);
+});
+
+test("a moving population repeatedly visits both poles without replacing particles or accumulating at CE", () => {
+  const radius = 4.107028973825681, random = seeded(42);
+  const particles = Array.from({ length: 160 }, () => fresh(random, radius));
+  const north = new Set(), south = new Set(), late = new Set();
+  let polarSamples = 0, ceSamples = 0;
+  for (const p of particles) { p.attraction = 2; p.inflow = 1; }
+  for (let step = 0; step < 7200; step++) {
+    for (const [i, p] of particles.entries()) {
+      advanceFieldParticle(p, center, radius, 1, identity, 120 * Math.PI / 30, 1 / 120);
+      const pole = nearFieldPole(p.position, center, moment);
+      if (pole >= 0) {
+        (pole === 0 ? north : south).add(i);
+        if (step >= 3600) late.add(i);
+        polarSamples++;
+      }
+      if (particleBand(p.position, center, moment, radius) <= 1) ceSamples++;
+    }
+  }
+  assert.ok(north.size >= 20 && south.size >= 20, `Pole visitors ${north.size}/${south.size}`);
+  assert.ok(late.size >= 12, `Late visitors ${late.size}`);
+  assert.ok(polarSamples / 7200 > 0.1);
+  assert.ok(ceSamples / 7200 < particles.length * 0.1);
+  assert.ok(particles.every(p => p.position.concat(p.velocity).every(Number.isFinite)));
+  assert.ok(particles.filter(p => Math.hypot(...p.position) < radius * 6.5).length >= 150);
 });

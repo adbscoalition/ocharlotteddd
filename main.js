@@ -8,7 +8,11 @@ import {
   sampleDipoleField,
   POLE_DISTANCE,
 } from "./field-lines.mjs";
-import { reentryRadius, reentrySpeed } from "./electron-physics.mjs";
+import {
+  reentryRadius,
+  reentrySpeed,
+  POLAR_REGION_RADIUS,
+} from "./electron-physics.mjs";
 
 const BAND_CONFIG = [
   {
@@ -192,6 +196,7 @@ const elements = {
   electronStateOutput: document.querySelector("#electronStateOutput"),
   electronBandOutput: document.querySelector("#electronBandOutput"),
   electronOutcomeOutput: document.querySelector("#electronOutcomeOutput"),
+  electronPoleOutput: document.querySelector("#electronPoleOutput"),
   electronReentryOutput: document.querySelector("#electronReentryOutput"),
   respawnElectronsButton: document.querySelector("#respawnElectronsButton"),
   compassesToggle: document.querySelector("#compassesToggle"),
@@ -1332,6 +1337,13 @@ function syncProbeControls() {
 
 function updateElectronStateReadout() {
   const counts = fieldProbes.counts;
+  const [primaryPoles, secondaryPoles] = fieldProbes.poleCounts;
+  elements.electronPoleOutput.hidden = !state.showElectrons;
+  const poleText = state.secondaryEnabled
+    ? `Near poles (${POLAR_REGION_RADIUS} m): Charlotte 1 N ${primaryPoles[0]} · S ${primaryPoles[1]} | Charlotte 2 N ${secondaryPoles[0]} · S ${secondaryPoles[1]}`
+    : `Near poles (${POLAR_REGION_RADIUS} m): North ${primaryPoles[0]} · South ${primaryPoles[1]}`;
+  if (elements.electronPoleOutput.textContent !== poleText)
+    elements.electronPoleOutput.textContent = poleText;
   if (state.secondaryEnabled) {
     const captured = fieldProbes.captureCounts;
     elements.secondaryCaptureOutput.textContent = `Captured: Charlotte 1 ${captured[0]} · Charlotte 2 ${captured[1]}. Counts follow actual local forces.`;

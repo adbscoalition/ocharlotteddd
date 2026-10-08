@@ -11,6 +11,7 @@ export const POLE_SPAWN_FACTOR = 1.08;
 export const REENTRY_SPEED_FACTOR = 2;
 export const RECYCLE_RADIUS_FACTOR = 4;
 export const MAX_REENTRY_TIME = 20;
+export const POLAR_REGION_RADIUS = 0.45;
 const CAPTURE_RANGE = MH_MULTIPLIER * 2;
 const ELECTRIC_RESPONSE_SCALE = 0.003;
 const OUTER_ATTRACTION = 0.12;
@@ -175,6 +176,20 @@ export function populationSpeed(radius, distance, speed = 1, spread = 1) {
 export const reentryRadius = () => SOURCE_RADIUS * POLE_SPAWN_FACTOR;
 export const reentrySpeed = (radius) => radius * REENTRY_SPEED_FACTOR;
 
+// Spatial readout only. It does not capture, steer or hold a particle.
+export function nearFieldPole(position, center, moment) {
+  const x = position[0] - center[0],
+    y = position[1] - center[1],
+    z = position[2] - center[2];
+  const axial = x * moment[0] + y * moment[1] + z * moment[2];
+  const distance2 =
+    x * x + y * y + z * z + SOURCE_RADIUS ** 2 -
+    2 * SOURCE_RADIUS * Math.abs(axial);
+  return distance2 <= POLAR_REGION_RADIUS ** 2
+    ? (axial >= 0 ? 0 : 1)
+    : -1;
+}
+
 function randomDirection(random, out, maxCosine = 1) {
   // Uniform azimuth and cosine latitude give equal probability per solid angle.
   const y = (random() * 2 - 1) * maxCosine,
@@ -247,10 +262,17 @@ export function initializeFieldParticle(
   p.substeps = 1;
   p.captureAge = 0;
   p.transportResponse = 1;
-  // Random volume samples have no preferred band radius or equatorial plane.
+  // A diffuse background and a smooth near-source population cover both large
+  // orbits and polar transits. Neither selects band radii or a preferred plane.
   const inner = SOURCE_RADIUS * 1.1;
   const outer = Math.max(inner * 1.1, radius * MH_MULTIPLIER * 0.9);
-  const distance = Math.cbrt(inner ** 3 + random() * (outer ** 3 - inner ** 3));
+  const nearSource = random() < 0.5;
+  const distance = nearSource
+    ? Math.min(
+        outer,
+        inner + radius * 0.35 * Math.sqrt(-2 * Math.log(Math.max(1e-8, random()))),
+      )
+    : Math.cbrt(inner ** 3 + random() * (outer ** 3 - inner ** 3));
   randomDirection(random, p.scratch);
   transformFieldVector(p.scratch, orientation, p.scratch);
   for (let j = 0; j < 3; j++) p.position[j] = center[j] + p.scratch[j] * distance;
@@ -266,7 +288,18 @@ export function initializeFieldParticle(
   const n = [nx / norm, ny / norm, nz / norm];
   const w = [by * n[2] - bz * n[1], bz * n[0] - bx * n[2], bx * n[1] - by * n[0]];
   const angle = random() * Math.PI * 2;
-  const pitch = 0.3 + random() * 1.15;
+  let pitch = 0.3 + random() * 1.15;
+  if (nearSource && random() < 0.8) {
+    // Near the mirror loss cone, particles can reach and turn near a pole.
+    // B ratios set the angle; the actual force solver decides their trajectory.
+    const poleField = (2 * radius ** 3) / reentryRadius() ** 3;
+    pitch = Math.asin(
+      Math.min(
+        0.95,
+        Math.sqrt(Math.min(1, magnitude / poleField)) * (0.8 + random() * 0.5),
+      ),
+    );
+  }
   const parallel = (random() < 0.5 ? -1 : 1) * Math.cos(pitch);
   const velocity = populationSpeed(radius, distance, speed, p.speedSpread);
   for (let j = 0; j < 3; j++)
@@ -384,7 +417,10 @@ function scatterVelocity(p, dt, intensity) {
   if (p.scatterTime > 0) return;
   const random = p.random || Math.random;
   directionAwayFromPoles(random, p.scratch);
-  const angle = ((random() - 0.5) * 0.16) / Math.sqrt(1 + intensity),
+  // Weak wave scattering scales with transverse motion. Field-aligned entries
+  // retain a chance to revisit the loss cone instead of receiving a large kick.
+  const pitchResponse = Math.max(0.1, p.pitch);
+  const angle = ((random() - 0.5) * 0.16 * pitchResponse) / Math.sqrt(1 + intensity),
     cos = Math.cos(angle),
     sin = Math.sin(angle);
   const [x, y, z] = p.scratch,
