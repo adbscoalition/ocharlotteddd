@@ -5,11 +5,11 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>CLT Field Simulator</title>
     <link rel="icon" href="data:," />
-    <link rel="stylesheet" href="./src/styles.css" />
+    <link rel="stylesheet" href="./styles.css" />
     <script type="importmap">
       {
         "imports": {
-          "three": "./vendor/three.module.js"
+          "three": "./three.module.js"
         }
       }
     </script>
@@ -23,6 +23,8 @@
             <h1>CLT Field Simulator</h1>
           </div>
           <div class="stage-actions">
+            <button id="pauseButton" class="icon-button glass-button" type="button" aria-label="Pause simulation" title="Pause simulation">Ⅱ</button>
+            <button id="stepButton" class="icon-button glass-button" type="button" aria-label="Advance one frame" title="Advance one frame" disabled>›</button>
             <button id="menuToggleButton" class="icon-button glass-button" type="button" aria-label="Hide controls menu" title="Hide controls menu">
               ×
             </button>
@@ -33,6 +35,24 @@
           </div>
         </div>
         <canvas id="scene" aria-label="3D CLT field visualization"></canvas>
+        <div id="rendererStatus" class="renderer-status" role="status" aria-live="polite" hidden>
+          <strong>Restoring the 3D viewer…</strong>
+          <p>If it stays blank, reload the viewer to reconnect.</p>
+          <button id="reloadViewerButton" type="button">Reload viewer</button>
+        </div>
+        <section id="electronInspector" class="electron-inspector" aria-labelledby="electronDetailTitle" hidden>
+          <div class="inspector-heading"><strong id="electronDetailTitle">Electron</strong><button id="clearElectronButton" class="icon-button" type="button" aria-label="Close electron details">×</button></div>
+          <dl class="inspector-grid">
+            <div><dt>Status</dt><dd id="electronDetailStatus"></dd></div>
+            <div><dt>Dominant field</dt><dd id="electronDetailField"></dd></div>
+            <div><dt>Band</dt><dd id="electronDetailBand"></dd></div>
+            <div><dt>Heart distance</dt><dd id="electronDetailDistance"></dd></div>
+            <div><dt>Speed</dt><dd id="electronDetailSpeed"></dd></div>
+            <div><dt>Local field</dt><dd id="electronDetailMagnetic"></dd></div>
+          </dl>
+          <p id="electronDetailMotion" class="control-hint"></p>
+          <p id="electronDetailNote" class="control-hint" aria-live="polite"></p>
+        </section>
         <div class="scale-note" id="scaleNote">Scaled view</div>
       </section>
 
@@ -53,10 +73,12 @@
           <label class="control-row">
             <span>M-band radius</span>
             <div class="unit-input">
-              <input id="mBandInput" type="text" inputmode="decimal" value="4" />
+              <input id="mBandInput" type="text" value="4.11" readonly aria-describedby="mBandHint" />
               <small>m</small>
             </div>
           </label>
+
+          <p class="control-hint" id="mBandHint">Calculated automatically from CLT.</p>
 
           <label class="control-row">
             <span>Rotation</span>
@@ -93,6 +115,138 @@
               </div>
             </div>
           </label>
+
+          <label class="control-row">
+            <span>Universal axial tilt</span>
+            <div class="range-pair">
+              <input id="universalTiltRange" type="range" min="-180" max="180" step="0.1" value="0" aria-label="Universal axial tilt" aria-describedby="universalTiltHint" />
+              <div class="unit-input compact">
+                <input id="universalTiltInput" type="text" inputmode="decimal" value="0" aria-label="Universal axial tilt in degrees" aria-describedby="universalTiltHint" />
+                <small>deg</small>
+              </div>
+            </div>
+            <small class="control-hint" id="universalTiltHint">Tilts all field bands together. The human stays upright.</small>
+          </label>
+          <label class="control-row">
+            <span>Field jitter</span>
+            <div class="range-pair">
+              <input id="jitterRange" type="range" min="0" max="15" step="0.1" value="0" aria-label="Magnetic field jitter" />
+              <div class="unit-input compact">
+                <input id="jitterInput" type="text" inputmode="decimal" value="0" aria-label="Magnetic field jitter in degrees" />
+                <small>deg</small>
+              </div>
+            </div>
+            <small class="control-hint">Shakes the field around the heart. The human stays upright; zero turns shaking off.</small>
+          </label>
+        </section>
+
+        <section class="panel-section" aria-labelledby="secondaryHeading">
+          <h2 id="secondaryHeading">Second Charlotte</h2>
+          <label class="toggle-row"><span>Secondary field</span><input id="secondaryToggle" type="checkbox" /></label>
+          <div id="secondaryControls" hidden>
+            <label class="control-row"><span>Secondary CLT</span><input id="secondaryCLTInput" type="text" inputmode="decimal" value="650" /></label>
+            <label class="control-row"><span>M-band radius</span><div class="unit-input"><input id="secondaryMOutput" type="text" readonly /><small>m</small></div></label>
+            <label class="control-row"><span>Distance</span><div class="unit-input"><input id="secondaryDistanceInput" type="text" inputmode="decimal" value="4" /><small>m</small></div></label>
+            <p class="control-hint">Position relative to the first Charlotte, in meters. Y changes height.</p>
+            <div class="position-grid">
+              <label>X<input id="secondaryXInput" type="text" inputmode="decimal" value="4" /></label>
+              <label>Y<input id="secondaryYInput" type="text" inputmode="decimal" value="0" /></label>
+              <label>Z<input id="secondaryZInput" type="text" inputmode="decimal" value="0" /></label>
+            </div>
+            <label class="control-row"><span>Rotation</span><div class="unit-input"><input id="secondaryRPMInput" type="text" inputmode="decimal" value="90" /><small>rpm</small></div></label>
+            <label class="control-row"><span>Axial tilt</span><div class="unit-input"><input id="secondaryTiltInput" type="text" inputmode="decimal" value="-13" /><small>deg</small></div></label>
+            <label class="control-row"><span>Polarity flips</span><div class="range-pair with-action"><input id="secondaryFlipsRange" type="range" min="0" max="10" step="0.1" value="0.3" /><div class="unit-input compact"><input id="secondaryFlipsInput" type="text" inputmode="decimal" value="0.3" /><small>/min</small></div><button id="secondaryFlipNowButton" class="icon-button" type="button" aria-label="Flip secondary polarity now" title="Flip secondary polarity now">⇅</button></div></label>
+            <p id="secondaryPolarityStatus" class="control-hint">Polarity stable</p>
+            <label class="control-row"><span>Field jitter</span><div class="range-pair"><input id="secondaryJitterRange" type="range" min="0" max="15" step="0.1" value="0" /><div class="unit-input compact"><input id="secondaryJitterInput" type="text" inputmode="decimal" value="0" /><small>deg</small></div></div></label>
+            <p class="control-hint">Jitter applies to this source. Universal axial tilt, electron display and capture controls apply to both Charlottes.</p>
+            <p id="secondaryFieldReadout" class="control-hint"></p>
+            <p id="secondaryViewerReadout" class="control-hint"></p>
+            <label class="toggle-row"><span>Reverse secondary poles</span><input id="secondaryReverseToggle" type="checkbox" /></label>
+            <label class="control-row"><span>Interaction stirring</span><div class="range-pair"><input id="stirringRange" type="range" min="0" max="3" step="0.1" value="1" /><output id="stirringOutput">1×</output></div></label>
+            <p class="control-hint">Both fields can capture electrons. Local field strength determines which captures them; stronger sources drive more of the modeled overlap flow.</p>
+            <p class="control-hint particle-readout" id="secondaryCaptureOutput"></p>
+          </div>
+        </section>
+
+        <section class="panel-section" aria-labelledby="probesHeading">
+          <h2 id="probesHeading">Electrons &amp; Compasses</h2>
+          <label class="toggle-row">
+            <span>Show field lines</span>
+            <input id="fieldLinesToggle" type="checkbox" checked />
+          </label>
+          <label class="toggle-row">
+            <span>Show free electrons</span>
+            <input id="electronsToggle" type="checkbox" aria-describedby="electronsHint" />
+          </label>
+          <p class="control-hint" id="electronsHint">A broad electron cloud and a near-source population move freely under local magnetic and electric forces, with entries that can reach both poles. Capture preserves their motion, allowing spiraling, bouncing, drifting and band crossings.</p>
+          <details class="control-hint"><summary>Physics &amp; references</summary><p>Smooth closed magnetic loops and locally exact helical integration drive electron motion. Magnetic force bends velocity; the separate broad CLT electric potential, pole attraction, and rotating plasma flow can change energy. Added inward transport fades smoothly after capture to prevent continual compression at the axis. Polar footpoints sample a continuous range of loops. Band boundaries classify positions; they do not create fixed wells or assigned paths. With attraction off, inflow stays inward. Plasma entrainment stays bounded at high RPM. Modeled capture relaxation removes excess energy while preserving bounded azimuthal momentum so cooling preserves circulating motion. Captured electrons are magnetized or bound by the CLT trapping potential. Weak random pitch scattering models wave interactions. Two sources contribute vector sums of their magnetic and electric fields. Stirring is a modeled rotating plasma flow, strongest where both fields overlap. Source strength, time scales and electric terms are illustrative, not calibrated plasma parameters.</p><p><a href="https://www.feynmanlectures.caltech.edu/II_15.html" target="_blank" rel="noopener noreferrer">Closed magnetic flux — Feynman Lectures</a><br /><a href="https://www.feynmanlectures.caltech.edu/II_14.html" target="_blank" rel="noopener noreferrer">Superposition of magnetic fields — Feynman Lectures</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/Plasmahtml/node24.html" target="_blank" rel="noopener noreferrer">Dipole orbits, mirrors &amp; drift — UT Austin</a><br /><a href="https://farside.ph.utexas.edu/teaching/plasma/lectures1/node16.html" target="_blank" rel="noopener noreferrer">Helical motion &amp; E-cross-B drift — UT Austin</a></p></details>
+          <label class="toggle-row"><span>Hide uncaptured electrons</span><input id="capturedOnlyToggle" type="checkbox" disabled /></label>
+          <label class="control-row"><span>Electron colors</span><select id="electronColorMode" disabled><option value="status">Status</option><option value="single">Single color</option><option value="distance">Distance from field</option><option value="speed">Speed</option></select></label>
+          <label class="control-row" id="singleColorRow" hidden><span>Single color</span><input id="electronColorInput" type="color" value="#ffd34d" aria-label="Single electron color" /></label>
+          <p class="control-hint" id="electronColorHint">Cyan: free · Green: interacting · Gold: captured · White: escaping</p>
+          <p class="control-hint">Click an electron in the viewer to inspect its live status. Capture is active throughout the field, even with lines hidden.</p>
+          <p class="control-hint" id="electronReentryOutput">Replacement electrons enter through either polar cap, with varied orbital pitch at 2 × M m/s.</p>
+          <p class="control-hint particle-readout" id="electronStateOutput">Electrons hidden</p>
+          <p class="control-hint particle-readout" id="electronOutcomeOutput"></p>
+          <p class="control-hint particle-readout" id="electronPoleOutput" hidden></p>
+          <div id="electronBandOutput" class="electron-bands" aria-label="Electron band distribution" hidden>
+            <p class="control-hint">Band distribution inside MH · distance from the dominant magnetic axis</p>
+            <div class="band-count-grid">
+              <span>NS <strong data-band-index="0">0</strong></span>
+              <span>CE <strong data-band-index="1">0</strong></span>
+              <span>E <strong data-band-index="2">0</strong></span>
+              <span>M <strong data-band-index="3">0</strong></span>
+              <span>PS <strong data-band-index="4">0</strong></span>
+              <span>MS <strong data-band-index="5">0</strong></span>
+              <span>MP <strong data-band-index="6">0</strong></span>
+              <span>MH <strong data-band-index="7">0</strong></span>
+              <span>Outside <strong data-band-index="8">0</strong></span>
+            </div>
+          </div>
+          <label class="control-row">
+            <span>Electron count</span>
+            <div class="range-pair">
+              <input id="electronCountRange" type="range" min="100" max="5000" step="100" value="1600" aria-label="Electron count" disabled />
+              <output id="electronCountOutput" for="electronCountRange">1,600</output>
+            </div>
+          </label>
+          <label class="control-row">
+            <span>Launch speed</span>
+            <div class="range-pair">
+              <input id="electronSpeedRange" type="range" min="0.1" max="3" step="0.1" value="1" aria-label="Electron launch speed" disabled />
+              <output id="electronSpeedOutput" for="electronSpeedRange">1×</output>
+            </div>
+          </label>
+          <label class="control-row">
+            <span>Capture attraction</span>
+            <div class="range-pair">
+              <input id="electronAttractionRange" type="range" min="0" max="5" step="0.1" value="2" aria-label="Electron capture attraction" disabled />
+              <output id="electronAttractionOutput" for="electronAttractionRange">2×</output>
+            </div>
+          </label>
+          <p class="control-hint">Pulls electrons toward the field and poles, and relaxes excess energy while preserving captured motion. Changes take effect without restarting.</p>
+          <label class="control-row">
+            <span>Rotation inflow</span>
+            <div class="range-pair">
+              <input id="rotationInflowRange" type="range" min="0" max="3" step="0.1" value="1" aria-label="Rotation-driven inward drift" disabled />
+              <output id="rotationInflowOutput" for="rotationInflowRange">1×</output>
+            </div>
+          </label>
+          <p class="control-hint">Pulls incoming electrons inward. This added drift fades after capture so electrons keep circulating. With attraction off, inflow stays inward. Zero disables it.</p>
+          <label class="toggle-row">
+            <span>Electron trails</span>
+            <input id="electronTrailsToggle" type="checkbox" disabled />
+          </label>
+          <p class="control-hint">Trails record actual motion through space. Past positions stay fixed as the field rotates or particles change bands.</p>
+          <label class="toggle-row"><span>Stable path view</span><input id="stablePathsToggle" type="checkbox" disabled /></label>
+          <p class="control-hint">Freeze recent recorded paths in space. Time and camera controls remain available.</p>
+          <button id="refreshPathsButton" class="probe-button" type="button" disabled>Refresh frozen paths</button>
+          <button id="respawnElectronsButton" class="probe-button" type="button" disabled>Inject fresh electrons</button>
+          <label class="toggle-row">
+            <span>Show compasses</span>
+            <input id="compassesToggle" type="checkbox" aria-describedby="compassesHint" />
+          </label>
+          <p class="control-hint" id="compassesHint">Red needle tips point along the local magnetic field in 3D. With no field, the needles fade.</p>
         </section>
 
         <section class="panel-section readout-grid" aria-label="Live readouts">
@@ -106,11 +260,15 @@
           </div>
           <div class="readout">
             <span>Field scale</span>
-            <strong id="fieldScaleReadout">MH R 26.0 m</strong>
+            <strong id="fieldScaleReadout">MH R 26.7 m</strong>
           </div>
           <div class="readout">
             <span>Model height</span>
-            <strong>1.6 m</strong>
+            <strong>1.68 m</strong>
+          </div>
+          <div class="readout">
+            <span>Field source</span>
+            <strong>Heart</strong>
           </div>
           <div class="readout">
             <span>Viewer band</span>
@@ -129,6 +287,15 @@
       </aside>
     </main>
 
-    <script type="module" src="./src/main.js"></script>
+    <script type="module">
+      document.getElementById("reloadViewerButton").addEventListener("click", () => location.reload());
+      import("./main.js").catch((error) => {
+        const status = document.getElementById("rendererStatus");
+        status.querySelector("strong").textContent = "The 3D viewer could not start.";
+        status.querySelector("p").textContent = "Reload the viewer to try again.";
+        status.hidden = false;
+        console.error("Unable to start the 3D viewer:", error);
+      });
+    </script>
   </body>
 </html>
